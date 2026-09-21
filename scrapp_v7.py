@@ -12,7 +12,7 @@ from pathlib import Path
 # ============================================================
 
 ADB = r".\adb.exe"
-MODO_PRUEBA = True
+MODO_PRUEBA = False
 EXTRAER_COMPETICIONES_TEMPORADA = True
 
 TEMPORADAS = ["26-27", "25-26", "24-25"]
