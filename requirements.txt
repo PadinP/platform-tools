@@ -1,0 +1,5 @@
+# Procesamiento del CSV y exportación final a Excel
+pandas==3.0.3
+
+# Motor utilizado por pandas para escribir archivos .xlsx
+openpyxl==3.1.5

@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# XML de pruebas y debug
+*.xml
+debug_rfaf/
+
+# Ejecutables de platform-tools que no usamos
+fastboot.exe
+etc1tool.exe
+hprof-conv.exe
+make_f2fs.exe
+make_f2fs_casefold.exe
+mke2fs.exe
+sqlite3.exe
+
+# Editor / sistema
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Temporales
+*.tmp
+*.bak
