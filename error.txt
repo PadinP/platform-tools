@@ -1,0 +1,629 @@
+PS C:\Users\Alex\Desktop\platform-tools> & C:\Users\Alex\AppData\Local\Python\pythoncore-3.14-64\python.exe c:/Users/Alex/Desktop/platform-tools/scrapp_v7.py
+
+======================================================================
+SCRAPER RFAF V7
+SOPORTE DE JUGADORES SIN NOMBRE EN PLANTILLA / 26-27
+SCROLL PLANTILLA: APROX. UNA FILA POR VEZ
+CONTADOR APP = FUENTE DE VERDAD
+======================================================================
+Modo prueba: False
+Competiciones por temporada: True
+✓ Dispositivo: RZGYB0TJ4JV
+✓ CSV: C:\Users\Alex\Desktop\platform-tools\jugadores_rfaf.csv
+✓ Filas existentes: 3465
+✓ Checkpoint: 54 equipos | 1157 jugadores | 923 partidos
+
+→ Abriendo Competiciones...
+→ Categoría: FÚTBOL NACIONAL
+→ Competición: TERCERA FEDERACIÓN
+✓ Ya completado: TERCERA FEDERACIÓN | Grupo -
+
+→ Abriendo Competiciones...
+→ Categoría: FÚTBOL NACIONAL
+→ Competición: LIGA NACIONAL JUVENIL
+✓ Ya completado: LIGA NACIONAL JUVENIL | Grupo -
+
+→ Abriendo Competiciones...
+→ Categoría: FÚTBOL REGIONAL
+→ Competición: REGIONAL PREFERENTE
+→ Grupo: 1
+✓ Ya completado: REGIONAL PREFERENTE | Grupo 1
+
+→ Abriendo Competiciones...
+→ Categoría: FÚTBOL REGIONAL
+→ Competición: REGIONAL PREFERENTE
+→ Grupo: 2
+
+======================================================================
+FÚTBOL REGIONAL | REGIONAL PREFERENTE | Grupo 2
+======================================================================
+→ Buscando jornada 1
+   Jornadas visibles: [2, 3, 4, 5, 6]
+   Jornadas visibles: [1, 2, 3, 4, 5]
+   ✓ Pulsando jornada 1
+
+→ Partido encontrado: UTRILLAS-C.D. vs ALCAÑIZ C.F.
+
+PARTIDO: UTRILLAS-C.D. vs ALCAÑIZ C.F.
+
+   EQUIPO: UTRILLAS-C.D.
+c:\Users\Alex\Desktop\platform-tools\scrapp_v7.py:711: DeprecationWarning: Testing an element's truth value will always return True in future versions.  Use specific 'len(elem)' or 'elem is not None' test instead.
+  team_root = team_root or ui_root()
+   La app indica: 20 jugadores
+   Ya procesados: 5/20
+
+      → DOUMBIA , DJIGUI
+         Si termina: 6/20
+         26-27 ✓ J=1 G=1
+         25-26 ✓ J=14 G=4
+         24-25 ✓ J=0 G=0
+      ✓ DOUMBIA , DJIGUI (3 filas nuevas)
+
+      → GARCIA PEREZ, GUILLERMO
+         Si termina: 7/20
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=21 G=8
+         24-25 ✓ J=19 G=6
+      ✓ GARCIA PEREZ, GUILLERMO (3 filas nuevas)
+
+      → GASCON VICENTE, DIEGO
+         Si termina: 8/20
+         26-27 ✓ J=1 G=0
+         25-26 ✓ J=0 G=0
+         24-25 ✓ J=11 G=4
+      ✓ GASCON VICENTE, DIEGO (3 filas nuevas)
+
+      → LERA LONGARES, GABRIEL
+         Si termina: 9/20
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=33 G=0
+         24-25 ✓ J=34 G=0
+      ✓ LERA LONGARES, GABRIEL (3 filas nuevas)
+
+      → LOPEZ LAGUIA, AARON
+         Si termina: 10/20
+         26-27 ✓ J=1 G=0
+         25-26 ✓ J=27 G=0
+         24-25 ✓ J=20 G=0
+      ✓ LOPEZ LAGUIA, AARON (3 filas nuevas)
+
+      → LOPEZ LAGUIA, JORGE
+         Si termina: 11/20
+         26-27 ✓ J=1 G=0
+         25-26 ✓ J=25 G=2
+         24-25 ✓ J=25 G=1
+      ✓ LOPEZ LAGUIA, JORGE (3 filas nuevas)
+
+      → MALDONADO LUJAN, DAVID
+         Si termina: 12/20
+         26-27 ✓ J=2 G=0
+         25-26 ✓ J=21 G=1
+         24-25 ✓ J=25 G=1
+      ✓ MALDONADO LUJAN, DAVID (3 filas nuevas)
+
+      → MARTINEZ SEMPER, EIDEN
+         Si termina: 13/20
+         26-27 ✓ J=1 G=0
+         25-26 ✓ J=22 G=4
+         24-25 ✓ J=22 G=26
+      ✓ MARTINEZ SEMPER, EIDEN (3 filas nuevas)
+
+      → MORALES MORTE, RAUL
+         Si termina: 14/20
+         26-27 ✓ J=3 G=0
+         25-26 ✓ J=28 G=1
+         24-25 ✓ J=37 G=8
+      ✓ MORALES MORTE, RAUL (3 filas nuevas)
+
+      → PÉREZ GÓMEZ, MANUEL
+         Si termina: 15/20
+         26-27 ✓ J=4 G=2
+         25-26 ✓ J=33 G=9
+         24-25 ✓ J=31 G=14
+      ✓ PÉREZ GÓMEZ, MANUEL (3 filas nuevas)
+
+      → REDOLAR TORRES, DIEGO
+         Si termina: 16/20
+         26-27 ✓ J=4 G=1
+         25-26 ✓ J=21 G=3
+         24-25 ✓ J=34 G=2
+      ✓ REDOLAR TORRES, DIEGO (3 filas nuevas)
+
+      → SANCHEZ GARCIA, ADRIAN
+         Si termina: 17/20
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=28 G=4
+         24-25 ✓ J=30 G=22
+      ✓ SANCHEZ GARCIA, ADRIAN (3 filas nuevas)
+
+      → SANTA EUGENIA MERCADO, IGNACIO
+         Si termina: 18/20
+         26-27 ✓ J=3 G=0
+         25-26 ✓ J=18 G=0
+         24-25 ✓ J=27 G=0
+      ✓ SANTA EUGENIA MERCADO, IGNACIO (3 filas nuevas)
+
+      → TRASOBARES SOLANAS, HUGO
+         Si termina: 19/20
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=27 G=1
+         24-25 ✓ J=7 G=2
+      ✓ TRASOBARES SOLANAS, HUGO (3 filas nuevas)
+
+      → USON SEVERO, HECTOR
+         Si termina: 20/20
+         26-27 ✓ J=3 G=0
+         25-26 ✓ J=36 G=3
+         24-25 ✓ J=24 G=1
+      ✓ USON SEVERO, HECTOR (3 filas nuevas)
+
+   ✓ Plantilla completa: 20/20
+c:\Users\Alex\Desktop\platform-tools\scrapp_v7.py:720: DeprecationWarning: Testing an element's truth value will always return True in future versions.  Use specific 'len(elem)' or 'elem is not None' test instead.
+  root = root or ui_root()
+   ✓ EQUIPO COMPLETADO: UTRILLAS-C.D. (20/20)
+
+   EQUIPO: ALCAÑIZ C.F.
+   La app indica: 19 jugadores
+   Ya procesados: 0/19
+
+      → AJDINOVIC NAVARRO, EDER
+         Si termina: 1/19
+         26-27 ✓ J=3 G=0
+         25-26 ✓ J=33 G=1
+         24-25 ✓ J=22 G=1
+      ✓ AJDINOVIC NAVARRO, EDER (3 filas nuevas)
+
+      → ANDREU TRAIN, ALEJANDRO
+         Si termina: 2/19
+         26-27 ✓ J=0 G=0
+         25-26 ✓ J=29 G=2
+         24-25 ✓ J=28 G=0
+      ✓ ANDREU TRAIN, ALEJANDRO (3 filas nuevas)
+
+      → BAGAN LEDESMA, MIGUEL
+         Si termina: 3/19
+         26-27 ✓ J=3 G=0
+         25-26 ✓ J=29 G=2
+         24-25 ✓ J=33 G=1
+      ✓ BAGAN LEDESMA, MIGUEL (3 filas nuevas)
+
+      → BLASCO GINER, GUILLERMO
+         Si termina: 4/19
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=31 G=1
+         24-25 ✓ J=29 G=1
+      ✓ BLASCO GINER, GUILLERMO (3 filas nuevas)
+
+      → BOSQUE PORTOLES, JAIME
+         Si termina: 5/19
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=14 G=2
+         24-25 ✓ J=17 G=2
+      ✓ BOSQUE PORTOLES, JAIME (3 filas nuevas)
+
+      → CARDIEL VICENTE, ANGEL
+         Si termina: 6/19
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=31 G=2
+         24-25 ✓ J=32 G=3
+      ✓ CARDIEL VICENTE, ANGEL (3 filas nuevas)
+
+      → CONESA RODRIGO, JAVIER
+         Si termina: 7/19
+         26-27 ✓ J=3 G=0
+         25-26 ✓ J=33 G=8
+         24-25 ✓ J=30 G=0
+      ✓ CONESA RODRIGO, JAVIER (3 filas nuevas)
+
+      → HERRERO SANCHEZ, BRUNO
+         Si termina: 8/19
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=28 G=0
+         24-25 ✓ J=28 G=2
+      ✓ HERRERO SANCHEZ, BRUNO (3 filas nuevas)
+
+      → ISSMAIL
+         Si termina: 9/19
+         26-27 ✓ J=4 G=1
+         25-26 ✓ J=20 G=3
+         24-25 ✓ J=32 G=6
+      ✓ ISSMAIL (3 filas nuevas)
+
+      → LEIVA NIETO, OSCAR
+         Si termina: 10/19
+         26-27 ✓ J=4 G=1
+         25-26 ✓ J=27 G=2
+         24-25 ✓ J=32 G=6
+      ✓ LEIVA NIETO, OSCAR (3 filas nuevas)
+
+      → LORENZ TOMEO, MARCOS
+         Si termina: 11/19
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=24 G=0
+         24-25 ✓ J=18 G=1
+      ✓ LORENZ TOMEO, MARCOS (3 filas nuevas)
+
+      → MUNIESA VELILLA, JAVIER
+         Si termina: 12/19
+         26-27 ✓ J=0 G=0
+         25-26 ✓ J=15 G=0
+         24-25 ✓ J=28 G=0
+      ✓ MUNIESA VELILLA, JAVIER (3 filas nuevas)
+
+      → NIABALY KEITA, ALIMOU
+         Si termina: 13/19
+         26-27 ✓ J=3 G=0
+         25-26 ✓ J=33 G=12
+         24-25 ✓ J=26 G=7
+      ✓ NIABALY KEITA, ALIMOU (3 filas nuevas)
+
+      → PINA MARTINEZ, NICOLAS
+         Si termina: 14/19
+         26-27 ✓ J=3 G=1
+         25-26 ✓ J=12 G=1
+         24-25 ✓ J=26 G=0
+      ✓ PINA MARTINEZ, NICOLAS (3 filas nuevas)
+
+      → POPESCU TYMOKHIN, DAVID
+         Si termina: 15/19
+         26-27 ✓ J=3 G=0
+         25-26 ✓ J=10 G=0
+         24-25 ✓ J=15 G=0
+      ✓ POPESCU TYMOKHIN, DAVID (3 filas nuevas)
+
+      → RAIMUNDO BARRERAS, ENRIQUE
+         Si termina: 16/19
+         26-27 ✓ J=1 G=0
+         25-26 ✓ J=24 G=0
+         24-25 ✓ J=20 G=0
+      ✓ RAIMUNDO BARRERAS, ENRIQUE (3 filas nuevas)
+
+      → SOLER ESPALLARGAS, MIGUEL
+         Si termina: 17/19
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=26 G=3
+         24-25 ✓ J=30 G=6
+      ✓ SOLER ESPALLARGAS, MIGUEL (3 filas nuevas)
+
+      → URRIOS GASQUE, ALEJANDRO
+         Si termina: 18/19
+         26-27 ✓ J=2 G=0
+         25-26 ✓ J=15 G=0
+         24-25 ✓ J=31 G=0
+      ✓ URRIOS GASQUE, ALEJANDRO (3 filas nuevas)
+
+      → VAZ MENDY, ABILIO JACQUES
+         Si termina: 19/19
+         26-27 ✓ J=3 G=0
+         25-26 ✓ J=31 G=7
+         24-25 ✓ J=31 G=6
+      ✓ VAZ MENDY, ABILIO JACQUES (3 filas nuevas)
+
+   ✓ Plantilla completa: 19/19
+   ✓ EQUIPO COMPLETADO: ALCAÑIZ C.F. (19/19)
+✓ PARTIDO COMPLETADO: UTRILLAS-C.D. vs ALCAÑIZ C.F.
+
+→ Partido encontrado: CARIÑENA-C.D vs VALDEFIERRO-C.D.
+
+PARTIDO: CARIÑENA-C.D vs VALDEFIERRO-C.D.
+
+   EQUIPO: CARIÑENA-C.D
+   La app indica: 19 jugadores
+   Ya procesados: 0/19
+
+      → AMBROJ ROYO, JAVIER
+         Si termina: 1/19
+         26-27 ✓ J=4 G=4
+         25-26 ✓ J=31 G=4
+         24-25 ✓ J=30 G=3
+      ✓ AMBROJ ROYO, JAVIER (3 filas nuevas)
+
+      → BARRIENDOS PERDIGUER, JAVIER
+         Si termina: 2/19
+         26-27 ✓ J=4 G=1
+         25-26 ✓ J=32 G=4
+         24-25 ✓ J=36 G=1
+      ✓ BARRIENDOS PERDIGUER, JAVIER (3 filas nuevas)
+
+      → DAMBELLY CAMARA, LAGAMY
+         Si termina: 3/19
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=28 G=11
+         24-25 ✓ J=28 G=10
+      ✓ DAMBELLY CAMARA, LAGAMY (3 filas nuevas)
+
+      → DE LA CUERDA BUENO, PABLO
+         Si termina: 4/19
+         26-27 ✓ J=1 G=0
+         25-26 ✓ J=28 G=1
+         24-25 ✓ J=31 G=0
+      ✓ DE LA CUERDA BUENO, PABLO (3 filas nuevas)
+
+      → GIL SOLANO, JOSE CARLOS
+         Si termina: 5/19
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=32 G=1
+         24-25 ✓ J=31 G=0
+      ✓ GIL SOLANO, JOSE CARLOS (3 filas nuevas)
+
+      → IBAÑEZ ALONSO, IVAN
+         Si termina: 6/19
+         26-27 ✓ J=4 G=1
+         25-26 ✓ J=27 G=4
+         24-25 ✓ J=28 G=6
+      ✓ IBAÑEZ ALONSO, IVAN (3 filas nuevas)
+
+      → JULIA VAZQUEZ, ALEJANDRO
+         Si termina: 7/19
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=12 G=0
+         24-25 ✓ J=29 G=0
+      ✓ JULIA VAZQUEZ, ALEJANDRO (3 filas nuevas)
+
+      → LATAS RIOS, JAVIER
+         Si termina: 8/19
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=26 G=0
+         24-25 ✓ J=19 G=1
+      ✓ LATAS RIOS, JAVIER (3 filas nuevas)
+
+      → LORENTE ROMERO, VICTOR
+         Si termina: 9/19
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=31 G=4
+         24-25 ✓ J=29 G=6
+      ✓ LORENTE ROMERO, VICTOR (3 filas nuevas)
+
+      → MARTIN PEREZ, ERIK
+         Si termina: 10/19
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=30 G=1
+         24-25 ✓ J=29 G=0
+      ✓ MARTIN PEREZ, ERIK (3 filas nuevas)
+
+      → OMEÑACA SOBRINO, RODRIGO
+         Si termina: 11/19
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=24 G=0
+         24-25 ✓ J=29 G=1
+      ✓ OMEÑACA SOBRINO, RODRIGO (3 filas nuevas)
+
+      → PEREZ HIDALGO, IVAN
+         Si termina: 12/19
+         26-27 ✓ J=2 G=0
+         25-26 ✓ J=27 G=0
+         24-25 ✓ J=25 G=0
+      ✓ PEREZ HIDALGO, IVAN (3 filas nuevas)
+
+      → PESCADOR CASASNOVAS, ROBERTO
+         Si termina: 13/19
+         26-27 ✓ J=3 G=2
+         25-26 ✓ J=24 G=4
+         24-25 ✓ J=24 G=0
+      ✓ PESCADOR CASASNOVAS, ROBERTO (3 filas nuevas)
+
+      → REKROUK , RADWAN
+         Si termina: 14/19
+         26-27 ✓ J=2 G=0
+         25-26 ✓ J=0 G=0
+         24-25 ✓ J=0 G=0
+      ✓ REKROUK , RADWAN (3 filas nuevas)
+
+      → ROCA CUCALON, DAVID
+         Si termina: 15/19
+         26-27 ✓ J=2 G=0
+         25-26 ✓ J=31 G=1
+         24-25 ✓ J=25 G=3
+      ✓ ROCA CUCALON, DAVID (3 filas nuevas)
+
+      → SANZ AMORES, ALBERTO
+         Si termina: 16/19
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=26 G=1
+         24-25 ✓ J=31 G=1
+      ✓ SANZ AMORES, ALBERTO (3 filas nuevas)
+
+      → SOLANS BARA, PABLO
+         Si termina: 17/19
+         26-27 ✓ J=2 G=0
+         25-26 ✓ J=27 G=4
+         24-25 ✓ J=32 G=0
+      ✓ SOLANS BARA, PABLO (3 filas nuevas)
+
+      → SOUMAH , IBRAHIMA SORY
+         Si termina: 18/19
+         26-27 ✓ J=4 G=0
+         25-26 ✓ J=27 G=2
+         24-25 ✓ J=27 G=5
+      ✓ SOUMAH , IBRAHIMA SORY (3 filas nuevas)
+
+   ↻ Llegué al final con 18/19. La app indica 19; vuelvo arriba.
+
+      → TAVARES CLAVERIA, AUGUSTO
+         Si termina: 19/19
+         26-27 ✓ J=2 G=0
+         25-26 ✓ J=2 G=0
+         24-25 ✓ J=32 G=0
+      ✓ TAVARES CLAVERIA, AUGUSTO (3 filas nuevas)
+
+   ✓ Plantilla completa: 19/19
+   ✓ EQUIPO COMPLETADO: CARIÑENA-C.D (19/19)
+
+   EQUIPO: VALDEFIERRO-C.D.
+   La app indica: 22 jugadores
+   Ya procesados: 0/22
+
+      → ALIAGA ARNAU, PABLO
+         Si termina: 1/22
+         26-27 ✓ J=2 G=0
+         25-26 ✓ J=0 G=0
+         24-25 ✓ J=26 G=1
+      ✓ ALIAGA ARNAU, PABLO (3 filas nuevas)
+
+      → BIRCOCI , ROBERT ANDREI
+         Si termina: 2/22
+         26-27 ✓ J=1 G=0
+         25-26 ✓ J=30 G=12
+         24-25 ✓ J=32 G=5
+      ✓ BIRCOCI , ROBERT ANDREI (3 filas nuevas)
+
+      → CABRERA PUYAL, JOEL
+         Si termina: 3/22
+         26-27 ✓ J=3 G=0
+         25-26 ✓ J=24 G=2
+         24-25 ✓ J=33 G=2
+      ✓ CABRERA PUYAL, JOEL (3 filas nuevas)
+
+      → CHARDOUDI CHARI, ABDELGHANI
+         Si termina: 4/22
+         26-27 ✓ J=1 G=0
+         25-26 ✓ J=18 G=3
+         24-25 ✓ J=34 G=3
+      ✓ CHARDOUDI CHARI, ABDELGHANI (3 filas nuevas)
+
+      → DURAN SAINZ, JORGE
+         Si termina: 5/22
+         26-27 ✓ J=2 G=0
+         25-26 ✓ J=33 G=1
+         24-25 ✓ J=34 G=6
+      ✓ DURAN SAINZ, JORGE (3 filas nuevas)
+
+      → ENAMORADO PAZ, MARVIN DANIEL
+         Si termina: 6/22
+         26-27 ✓ J=2 G=0
+         25-26 ✓ J=23 G=0
+         24-25 ✓ J=24 G=3
+      ✓ ENAMORADO PAZ, MARVIN DANIEL (3 filas nuevas)
+
+      → FONSECA VEIGA, DANIEL RICARDO
+         Si termina: 7/22
+         26-27 ✓ J=2 G=0
+         25-26 ✓ J=31 G=2
+         24-25 ✓ J=27 G=9
+      ✓ FONSECA VEIGA, DANIEL RICARDO (3 filas nuevas)
+
+      → GONZALEZ MARTINEZ, ALVARO
+         Si termina: 8/22
+         26-27 ✓ J=3 G=0
+         25-26 ✓ J=36 G=11
+         24-25 ✓ J=34 G=13
+      ✓ GONZALEZ MARTINEZ, ALVARO (3 filas nuevas)
+
+      → GRACIA PINILLA, RAUL
+         Si termina: 9/22
+         26-27 ✓ J=2 G=0
+         25-26 ✓ J=27 G=3
+         24-25 ✓ J=22 G=0
+      ✓ GRACIA PINILLA, RAUL (3 filas nuevas)
+
+      → HADJALLA HEDJALLA, SELMANE
+         Si termina: 10/22
+         26-27 ✓ J=2 G=0
+         25-26 ✓ J=17 G=4
+         24-25 ✓ J=27 G=6
+      ✓ HADJALLA HEDJALLA, SELMANE (3 filas nuevas)
+
+      → HERRERA EGIDO, JAVIER
+         Si termina: 11/22
+         26-27 ✓ J=0 G=0
+         25-26 ✓ J=2 G=0
+         24-25 ✓ J=0 G=0
+      ✓ HERRERA EGIDO, JAVIER (3 filas nuevas)
+
+      → JIMENEZ CALVO, CRISTIAN
+         Si termina: 12/22
+         26-27 ✓ J=3 G=1
+         25-26 ✓ J=34 G=12
+         24-25 ✓ J=34 G=13
+      ✓ JIMENEZ CALVO, CRISTIAN (3 filas nuevas)
+
+      → LOBEDE MUM, ARITZ
+         Si termina: 13/22
+         26-27 ✓ J=3 G=0
+         25-26 ✓ J=20 G=0
+         24-25 ✓ J=29 G=1
+      ✓ LOBEDE MUM, ARITZ (3 filas nuevas)
+
+      → LOPEZ MARTINEZ, JOSE MIGUEL
+         Si termina: 14/22
+         26-27 ✓ J=3 G=0
+         25-26 ✓ J=30 G=0
+         24-25 ✓ J=30 G=0
+      ✓ LOPEZ MARTINEZ, JOSE MIGUEL (3 filas nuevas)
+
+      → M RABET EL KARRACH, SAIF AL ISLAM
+         Si termina: 15/22
+         26-27 ✓ J=3 G=0
+         25-26 ✓ J=29 G=4
+         24-25 ✓ J=0 G=0
+      ✓ M RABET EL KARRACH, SAIF AL ISLAM (3 filas nuevas)
+
+      → MARQUEZ CALLEJAS, YEFRINALEXIS
+         Si termina: 16/22
+         26-27 ✓ J=0 G=0
+         25-26 ✓ J=27 G=0
+         24-25 ✓ J=32 G=2
+      ✓ MARQUEZ CALLEJAS, YEFRINALEXIS (3 filas nuevas)
+
+      → OSORIO LOPEZ, JHON FREDY
+         Si termina: 17/22
+         26-27 ✓ J=3 G=0
+         25-26 ✓ J=28 G=12
+         24-25 ✓ J=28 G=12
+      ✓ OSORIO LOPEZ, JHON FREDY (3 filas nuevas)
+
+      → PARDO SALAVERA, DIEGO
+         Si termina: 18/22
+         26-27 ✓ J=3 G=0
+         25-26 ✓ J=23 G=0
+         24-25 ✓ J=30 G=0
+      ✓ PARDO SALAVERA, DIEGO (3 filas nuevas)
+
+      → PORTAO PEÑA, JAVIER
+         Si termina: 19/22
+         26-27 ✓ J=2 G=0
+         25-26 ✓ J=34 G=9
+         24-25 ✓ J=33 G=17
+      ✓ PORTAO PEÑA, JAVIER (3 filas nuevas)
+
+      → RUIZ GAZULLA, JOSE
+         Si termina: 20/22
+         26-27 ✓ J=3 G=1
+         25-26 ✓ J=31 G=23
+         24-25 ✓ J=32 G=13
+      ✓ RUIZ GAZULLA, JOSE (3 filas nuevas)
+
+      → SUAREZ , NICOLAS AGUSTIN
+         Si termina: 21/22
+         26-27 ✓ J=0 G=0
+         25-26 ✓ J=33 G=0
+         24-25 ✓ J=24 G=1
+      ✓ SUAREZ , NICOLAS AGUSTIN (3 filas nuevas)
+
+   ↻ Llegué al final con 21/22. La app indica 22; vuelvo arriba.
+
+   ↻ Llegué al final con 21/22. La app indica 22; vuelvo arriba.
+
+   ↻ Llegué al final con 21/22. La app indica 22; vuelvo arriba.
+
+   ↻ Llegué al final con 21/22. La app indica 22; vuelvo arriba.
+
+   ↻ Llegué al final con 21/22. La app indica 22; vuelvo arriba.
+
+   ↻ Llegué al final con 21/22. La app indica 22; vuelvo arriba.
+
+   ↻ Llegué al final con 21/22. La app indica 22; vuelvo arriba.
+
+   ↻ Llegué al final con 21/22. La app indica 22; vuelvo arriba.
+
+   ↻ Llegué al final con 21/22. La app indica 22; vuelvo arriba.
+
+   ↻ Llegué al final con 21/22. La app indica 22; vuelvo arriba.
+   ✗ Después de 10 recorridos sigo en 21/22.
+c:\Users\Alex\Desktop\platform-tools\scrapp_v7.py:258: DeprecationWarning: Testing an element's truth value will always return True in future versions.  Use specific 'len(elem)' or 'elem is not None' test instead.
+  root = root or ui_root()
+DEBUG XML: debug_rfaf\team_incomplete_1790560407.xml
+   ✗ Error procesando VALDEFIERRO-C.D.
+
+⚠ Objetivo incompleto. CSV y checkpoint conservados.
+PS C:\Users\Alex\Desktop\platform-tools> 
