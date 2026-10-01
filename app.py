@@ -1,6 +1,336 @@
-#python -m streamlit run app.py   pip install streamlit pandas matplotlib mplsoccer
+# Desarrollo:
+#   python -m streamlit run app.py
+#
+# Escritorio:
+#   python app.py
+#
+# Compilado:
+#   FutbolApp.exe
+#
+# Al ejecutar `python app.py` o `FutbolApp.exe`, este mismo archivo:
+# 1) inicia Streamlit en localhost,
+# 2) abre la interfaz en una ventana propia,
+# 3) y al cerrar esa ventana termina el servidor local.
 
+import atexit
+import os
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+# Desactiva la exportación nativa de datos de Streamlit cuando la versión
+# instalada soporta esta opción. El CSS de más abajo actúa como respaldo.
+os.environ.setdefault("STREAMLIT_CLIENT_DISABLE_DATA_EXPORT", "true")
+
+
+_FUTBOLAPP_CHILD_ENV = "FUTBOLAPP_STREAMLIT_CHILD"
+
+
+def _directorio_app():
+    """Carpeta real del proyecto o carpeta temporal de PyInstaller."""
+    return getattr(
+        sys,
+        "_MEIPASS",
+        os.path.dirname(os.path.abspath(__file__))
+    )
+
+
+def _puerto_libre():
+    """Busca un puerto local libre para Streamlit."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _esperar_streamlit(puerto, proceso, timeout=60):
+    """
+    Espera a que Streamlit abra realmente el puerto local.
+
+    Se usa una comprobación TCP en vez de consultar la página raíz por HTTP,
+    porque durante el arranque Streamlit/Uvicorn puede responder 404 de forma
+    transitoria aunque el servidor ya esté iniciándose correctamente.
+    """
+    limite = time.time() + timeout
+
+    while time.time() < limite:
+
+        if proceso.poll() is not None:
+            return False
+
+        try:
+            with socket.create_connection(
+                ("127.0.0.1", puerto),
+                timeout=0.5
+            ):
+                time.sleep(0.8)
+                return True
+
+        except OSError:
+            time.sleep(0.20)
+
+    return False
+
+
+def _cerrar_proceso(proceso):
+    """Termina el servidor Streamlit si todavía está activo."""
+    if proceso is None or proceso.poll() is not None:
+        return
+
+    try:
+        proceso.terminate()
+        proceso.wait(timeout=5)
+
+    except Exception:
+
+        try:
+            proceso.kill()
+        except Exception:
+            pass
+
+
+def _mostrar_error(mensaje):
+    """Muestra un error aunque el EXE se haya creado con --windowed."""
+    if os.name == "nt":
+
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                mensaje,
+                "FutbolApp",
+                0x10
+            )
+
+            return
+
+        except Exception:
+            pass
+
+    print(mensaje)
+
+
+def _ejecutar_streamlit_dentro_del_exe(puerto):
+    """
+    Ejecuta Streamlit dentro del EXE de PyInstaller.
+
+    Es el equivalente interno de:
+        python -m streamlit run app.py
+
+    La opción global.developmentMode se fuerza a false porque Streamlit
+    bloquea server.port cuando developmentMode está activo.
+    """
+    base = _directorio_app()
+    os.chdir(base)
+
+    app_path = os.path.join(
+        base,
+        "app.py"
+    )
+
+    os.environ[
+        _FUTBOLAPP_CHILD_ENV
+    ] = "1"
+
+    # Forzamos también por variables de entorno antes de cargar Streamlit.
+    os.environ["STREAMLIT_GLOBAL_DEVELOPMENT_MODE"] = "false"
+    os.environ["STREAMLIT_SERVER_ADDRESS"] = "127.0.0.1"
+    os.environ["STREAMLIT_SERVER_PORT"] = str(puerto)
+    os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
+    os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
+    os.environ["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
+
+    sys.argv = [
+        "streamlit",
+        "run",
+        app_path,
+        "--global.developmentMode=false",
+        "--server.address=127.0.0.1",
+        f"--server.port={puerto}",
+        "--server.headless=true",
+        "--server.fileWatcherType=none",
+        "--browser.gatherUsageStats=false",
+    ]
+
+    from streamlit.web.cli import main as streamlit_cli
+
+    streamlit_cli()
+
+
+def main():
+    """
+    Lanzador de escritorio.
+
+    En desarrollo crea:
+        python -m streamlit run app.py
+
+    En el EXE crea un proceso hijo del propio FutbolApp.exe que ejecuta
+    Streamlit internamente.
+
+    Al cerrar la ventana, también se termina el servidor.
+    """
+    try:
+        import webview
+
+    except ImportError:
+        _mostrar_error(
+            "Falta pywebview.\n\n"
+            "Instálalo con:\n"
+            "python -m pip install pywebview"
+        )
+        return 1
+
+    base = _directorio_app()
+    os.chdir(base)
+
+    puerto = _puerto_libre()
+
+    if getattr(
+        sys,
+        "frozen",
+        False
+    ):
+        comando = [
+            sys.executable,
+            "--streamlit-child",
+            str(puerto),
+        ]
+
+        entorno = os.environ.copy()
+
+    else:
+        # En desarrollo, ejecuta exactamente este archivo aunque se llame
+        # app_corregido.py, app_excel_nuevo.py, etc.
+        app_path = os.path.abspath(__file__)
+
+        comando = [
+            sys.executable,
+            "-m",
+            "streamlit",
+            "run",
+            app_path,
+            "--global.developmentMode=false",
+            "--server.address=127.0.0.1",
+            f"--server.port={puerto}",
+            "--server.headless=true",
+            "--server.fileWatcherType=none",
+            "--browser.gatherUsageStats=false",
+        ]
+
+        entorno = os.environ.copy()
+        entorno[
+            _FUTBOLAPP_CHILD_ENV
+        ] = "1"
+
+    creationflags = 0
+    startupinfo = None
+
+    if os.name == "nt":
+
+        creationflags = getattr(
+            subprocess,
+            "CREATE_NO_WINDOW",
+            0
+        )
+
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+    servidor = subprocess.Popen(
+        comando,
+        cwd=base,
+        env=entorno,
+        creationflags=creationflags,
+        startupinfo=startupinfo,
+    )
+
+    atexit.register(
+        _cerrar_proceso,
+        servidor
+    )
+
+    if not _esperar_streamlit(
+        puerto,
+        servidor
+    ):
+        _cerrar_proceso(
+            servidor
+        )
+
+        _mostrar_error(
+            "No se pudo iniciar el servidor local de Streamlit."
+        )
+
+        return 1
+
+    url = (
+        f"http://127.0.0.1:"
+        f"{puerto}/"
+    )
+
+    webview.create_window(
+        "FutbolApp",
+        url,
+        width=1500,
+        height=920,
+        min_size=(
+            1050,
+            650
+        ),
+    )
+
+    try:
+        webview.start()
+
+    finally:
+        _cerrar_proceso(
+            servidor
+        )
+
+    return 0
+
+
+# ============================================================
+# ARRANQUE
+# ============================================================
+
+if (
+    __name__ == "__main__"
+    and "--streamlit-child" in sys.argv
+):
+    indice = sys.argv.index(
+        "--streamlit-child"
+    )
+
+    puerto_hijo = int(
+        sys.argv[indice + 1]
+    )
+
+    _ejecutar_streamlit_dentro_del_exe(
+        puerto_hijo
+    )
+
+    raise SystemExit(0)
+
+
+if (
+    __name__ == "__main__"
+    and os.environ.get(
+        _FUTBOLAPP_CHILD_ENV
+    ) != "1"
+):
+    raise SystemExit(
+        main()
+    )
+
+
+# A partir de aquí empieza la aplicación Streamlit normal.
 import re
+from io import BytesIO
+
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -17,9 +347,77 @@ st.set_page_config(
     layout="wide"
 )
 
+# ============================================================
+# OCULTAR DESCARGA CSV NATIVA DE ST.DATAFRAME
+# ============================================================
+# Streamlit puede cambiar internamente el HTML de la barra de herramientas,
+# por eso se cubren varias variantes del botón de descarga CSV.
+st.markdown(
+    """
+    <style>
+    button[aria-label="Download as CSV"],
+    button[title="Download as CSV"],
+    button[aria-label*="CSV" i],
+    button[title*="CSV" i] {
+        display: none !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 CSV_PATH = "jugadores_rfaf.csv"
 
 SIN_SELECCION = "— Sin seleccionar —"
+
+
+# ============================================================
+# COMPETICIONES OBJETIVO
+# Cada categoría define exactamente qué competiciones y grupos
+# deben aparecer en los filtros del campo de fútbol.
+# ============================================================
+
+OBJETIVOS = [
+    {
+        "categoria": "FÚTBOL NACIONAL",
+        "competicion": ["TERCERA FEDERACIÓN", "TERCERA DIVISIÓN"],
+        "grupos": [None],
+    },
+    {
+        "categoria": "FÚTBOL NACIONAL",
+        "competicion": ["LIGA NACIONAL JUVENIL", "LIGA NACIONAL"],
+        "grupos": [None],
+    },
+    {
+        "categoria": "FÚTBOL REGIONAL",
+        "competicion": ["REGIONAL PREFERENTE"],
+        "grupos": ["1", "2"],
+    },
+    {
+        "categoria": "FÚTBOL JUVENIL",
+        "competicion": ["JUVENIL PREFERENTE", "PREFERENTE JUVENIL"],
+        "grupos": [
+            "Grupo 1 - Zaragoza",
+            "Grupo 2 - Huesca",
+            "Grupo 4 - Teruel",
+            "Grupo 3-A - Provincia Zaragoza",
+            "Grupo 3-B - Provincia Zaragoza",
+        ],
+    },
+    {
+        "categoria": "FÚTBOL JUVENIL",
+        "competicion": ["1ª JUVENIL", "PRIMERA JUVENIL"],
+        "grupos": ["Grupo 1 - Zaragoza", "Grupo 2 - Zaragoza"],
+    },
+    {
+        "categoria": "FÚTBOL BASE",
+        "competicion": [
+            "DIVISIÓN DE HONOR CADETE",
+            "DIVISION DE HONOR CADETE",
+        ],
+        "grupos": [None],
+    },
+]
 
 
 # ============================================================
@@ -28,6 +426,12 @@ SIN_SELECCION = "— Sin seleccionar —"
 
 @st.cache_data
 def cargar_datos(archivo):
+
+    if hasattr(
+        archivo,
+        "seek"
+    ):
+        archivo.seek(0)
 
     df = pd.read_csv(
         archivo,
@@ -71,6 +475,103 @@ def texto_seguro(valor):
     return str(valor).strip()
 
 
+def normalizar_texto(valor):
+    """Normaliza texto para comparar filtros sin depender de mayúsculas."""
+    return re.sub(
+        r"\s+",
+        " ",
+        texto_seguro(valor).upper()
+    ).strip()
+
+
+def normalizar_grupo(valor):
+    """
+    Normaliza grupos para que, por ejemplo, "1", "Grupo 1"
+    y "GRUPO 1" se consideren el mismo grupo.
+    """
+
+    texto = normalizar_texto(
+        valor
+    )
+
+    coincidencia = re.fullmatch(
+        r"GRUPO\s+(\d+)",
+        texto
+    )
+
+    if coincidencia:
+        return coincidencia.group(1)
+
+    return texto
+
+
+def objetivo_por_competicion(competicion, categoria=None):
+    """
+    Devuelve el bloque de OBJETIVOS que corresponde a una competición.
+    Si se pasa categoría, también exige que coincida.
+    """
+
+    competicion_normalizada = normalizar_texto(
+        competicion
+    )
+
+    categoria_normalizada = normalizar_texto(
+        categoria
+    )
+
+    for objetivo in OBJETIVOS:
+
+        if (
+            categoria is not None
+            and normalizar_texto(
+                objetivo["categoria"]
+            ) != categoria_normalizada
+        ):
+            continue
+
+        aliases = {
+            normalizar_texto(alias)
+            for alias in objetivo["competicion"]
+        }
+
+        if competicion_normalizada in aliases:
+            return objetivo
+
+    return None
+
+
+def categoria_de_competicion(competicion, categoria_fallback=""):
+    """Obtiene la categoría correcta a partir de OBJETIVOS."""
+
+    objetivo = objetivo_por_competicion(
+        competicion
+    )
+
+    if objetivo is not None:
+        return objetivo["categoria"]
+
+    return texto_seguro(
+        categoria_fallback
+    )
+
+
+def grupos_configurados(categoria, competicion):
+    """
+    Devuelve los grupos permitidos para la pareja
+    categoría + competición definida en OBJETIVOS.
+    """
+
+    objetivo = objetivo_por_competicion(
+        competicion,
+        categoria
+    )
+
+    if objetivo is None:
+        return []
+
+    return objetivo["grupos"]
+
+
 # ============================================================
 # PROCESAR COMPETICIONES_TEMPORADA
 # ============================================================
@@ -78,18 +579,16 @@ def texto_seguro(valor):
 def separar_competiciones(df):
 
     """
-    Ejemplo:
+    Genera los registros que utiliza la app para filtrar equipos.
 
-    ROBRES-C.D. , TERCERA FEDERACIÓN · 17,
-    Posicion, 14°, Puntos, 1,
+    IMPORTANTE:
+    - La competición de origen SIEMPRE se conserva.
+    - ``Competiciones_temporada`` se considera información adicional,
+      no un sustituto de ``Competicion_origen``.
 
-    Se convierte en:
-
-    Equipo_filtro = ROBRES-C.D.
-    Liga_filtro = TERCERA FEDERACIÓN
-    Grupo_filtro = 17
-    Posicion_equipo = 14°
-    Puntos_equipo = 1
+    Esto evita que un jugador desaparezca de su plantilla de origen
+    simplemente porque también tenga otra competición registrada
+    durante la temporada.
     """
 
     registros = []
@@ -107,6 +606,68 @@ def separar_competiciones(df):
     )
 
     for _, fila in df.iterrows():
+
+        # ----------------------------------------------------
+        # 1. REGISTRO DE ORIGEN: SIEMPRE SE AÑADE
+        # ----------------------------------------------------
+
+        nuevo_origen = fila.to_dict()
+
+        equipo_origen = texto_seguro(
+            fila.get("Equipo_origen")
+        )
+
+        club_temporada = texto_seguro(
+            fila.get("Club_en_temporada")
+        )
+
+        # Las estadísticas de la fila proceden de la competición
+        # y equipo de origen, por eso se prioriza Equipo_origen.
+        equipo_base = (
+            equipo_origen
+            if equipo_origen
+            else club_temporada
+        )
+
+        liga_origen = texto_seguro(
+            fila.get("Competicion_origen")
+        )
+
+        grupo_origen = texto_seguro(
+            fila.get("Grupo_origen")
+        )
+
+        nuevo_origen["Equipo_filtro"] = equipo_base
+        nuevo_origen["Liga_filtro"] = liga_origen
+        nuevo_origen["Grupo_filtro"] = grupo_origen
+        nuevo_origen["Posicion_equipo"] = ""
+        nuevo_origen["Puntos_equipo"] = ""
+
+        objetivo_origen = objetivo_por_competicion(
+            liga_origen,
+            fila.get("Categoria_origen")
+        )
+
+        if objetivo_origen is None:
+            objetivo_origen = objetivo_por_competicion(
+                liga_origen
+            )
+
+        nuevo_origen["Categoria_filtro"] = (
+            objetivo_origen["categoria"]
+            if objetivo_origen is not None
+            else texto_seguro(
+                fila.get("Categoria_origen")
+            )
+        )
+
+        nuevo_origen["Es_objetivo"] = (
+            objetivo_origen is not None
+        )
+
+        # ----------------------------------------------------
+        # 2. COMPETICIONES ADICIONALES DE LA TEMPORADA
+        # ----------------------------------------------------
 
         raw = fila.get(
             "Competiciones_temporada"
@@ -126,11 +687,7 @@ def separar_competiciones(df):
                     if bloque.strip()
                 ]
 
-        encontrados = 0
-
-        # ----------------------------------------------------
-        # COMPETICIONES EN LA TEMPORADA
-        # ----------------------------------------------------
+        registros_adicionales = []
 
         for bloque in bloques:
 
@@ -147,6 +704,19 @@ def separar_competiciones(df):
             posicion = coincidencia.group(4).strip()
             puntos = coincidencia.group(5).strip()
 
+            # Si el bloque describe exactamente la misma competición
+            # de origen, aprovechamos posición/puntos y no duplicamos.
+            misma_competicion_origen = (
+                normalizar_texto(equipo) == normalizar_texto(equipo_base)
+                and normalizar_texto(liga) == normalizar_texto(liga_origen)
+                and normalizar_grupo(grupo) == normalizar_grupo(grupo_origen)
+            )
+
+            if misma_competicion_origen:
+                nuevo_origen["Posicion_equipo"] = posicion
+                nuevo_origen["Puntos_equipo"] = puntos
+                continue
+
             nuevo = fila.to_dict()
 
             nuevo["Equipo_filtro"] = equipo
@@ -155,49 +725,33 @@ def separar_competiciones(df):
             nuevo["Posicion_equipo"] = posicion
             nuevo["Puntos_equipo"] = puntos
 
-            registros.append(
+            objetivo = objetivo_por_competicion(
+                liga
+            )
+
+            nuevo["Categoria_filtro"] = (
+                objetivo["categoria"]
+                if objetivo is not None
+                else ""
+            )
+
+            nuevo["Es_objetivo"] = (
+                objetivo is not None
+            )
+
+            registros_adicionales.append(
                 nuevo
             )
 
-            encontrados += 1
+        # Primero conservamos siempre la fila de la competición de
+        # origen y después añadimos las otras competiciones encontradas.
+        registros.append(
+            nuevo_origen
+        )
 
-        # ----------------------------------------------------
-        # FALLBACK
-        # ----------------------------------------------------
-
-        if encontrados == 0:
-
-            nuevo = fila.to_dict()
-
-            club_temporada = texto_seguro(
-                fila.get("Club_en_temporada")
-            )
-
-            equipo_origen = texto_seguro(
-                fila.get("Equipo_origen")
-            )
-
-            if club_temporada:
-                equipo = club_temporada
-            else:
-                equipo = equipo_origen
-
-            nuevo["Equipo_filtro"] = equipo
-
-            nuevo["Liga_filtro"] = texto_seguro(
-                fila.get("Competicion_origen")
-            )
-
-            nuevo["Grupo_filtro"] = texto_seguro(
-                fila.get("Grupo_origen")
-            )
-
-            nuevo["Posicion_equipo"] = ""
-            nuevo["Puntos_equipo"] = ""
-
-            registros.append(
-                nuevo
-            )
+        registros.extend(
+            registros_adicionales
+        )
 
     return pd.DataFrame(
         registros
@@ -408,33 +962,178 @@ def primer_valor(serie):
 
 
 # ============================================================
-# TÍTULO
+# EXPORTAR TABLAS A EXCEL
 # ============================================================
 
-st.title(
-    "⚽ Equipos de fútbol"
-)
+def nombre_archivo_seguro(texto):
+    """Convierte un texto en un nombre válido para un archivo de Windows."""
 
-st.caption(
-    "Consulta equipos, jugadores, estadísticas y alineaciones "
-    "por temporada y competición."
-)
+    texto = texto_seguro(texto)
+    texto = re.sub(r'[<>:"/\\|?*]+', "_", texto)
+
+    return texto.strip(" ._") or "datos"
 
 
-# ============================================================
-# ARCHIVO CSV
-# ============================================================
+def dataframe_a_excel(df_exportar, nombre_hoja="Datos"):
+    """Convierte un DataFrame en un archivo Excel .xlsx en memoria."""
 
-with st.expander(
-    "📁 Cambiar archivo CSV",
-    expanded=False
-):
+    buffer = BytesIO()
+    nombre_hoja = str(nombre_hoja)[:31] or "Datos"
 
-    archivo_subido = st.file_uploader(
-        "Selecciona otro CSV",
-        type=["csv"]
+    with pd.ExcelWriter(
+        buffer,
+        engine="openpyxl"
+    ) as writer:
+        df_exportar.to_excel(
+            writer,
+            index=False,
+            sheet_name=nombre_hoja
+        )
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def elegir_ruta_excel_windows(nombre_sugerido):
+    """
+    Abre el cuadro nativo de Windows "Guardar como".
+
+    Se usa en lugar de st.download_button porque la aplicación se ejecuta
+    dentro de pywebview y las descargas del navegador pueden quedar en blanco
+    o no abrir el selector de ubicación.
+    """
+
+    if os.name != "nt":
+        raise RuntimeError(
+            "El selector nativo de guardado está preparado para Windows."
+        )
+
+    import ctypes
+    from ctypes import wintypes
+
+    OFN_OVERWRITEPROMPT = 0x00000002
+    OFN_NOCHANGEDIR = 0x00000008
+    OFN_PATHMUSTEXIST = 0x00000800
+    OFN_EXPLORER = 0x00080000
+
+    class OPENFILENAMEW(ctypes.Structure):
+        _fields_ = [
+            ("lStructSize", wintypes.DWORD),
+            ("hwndOwner", wintypes.HWND),
+            ("hInstance", wintypes.HINSTANCE),
+            ("lpstrFilter", wintypes.LPCWSTR),
+            ("lpstrCustomFilter", wintypes.LPWSTR),
+            ("nMaxCustFilter", wintypes.DWORD),
+            ("nFilterIndex", wintypes.DWORD),
+            ("lpstrFile", wintypes.LPWSTR),
+            ("nMaxFile", wintypes.DWORD),
+            ("lpstrFileTitle", wintypes.LPWSTR),
+            ("nMaxFileTitle", wintypes.DWORD),
+            ("lpstrInitialDir", wintypes.LPCWSTR),
+            ("lpstrTitle", wintypes.LPCWSTR),
+            ("Flags", wintypes.DWORD),
+            ("nFileOffset", wintypes.WORD),
+            ("nFileExtension", wintypes.WORD),
+            ("lpstrDefExt", wintypes.LPCWSTR),
+            ("lCustData", wintypes.LPARAM),
+            ("lpfnHook", ctypes.c_void_p),
+            ("lpTemplateName", wintypes.LPCWSTR),
+            ("pvReserved", ctypes.c_void_p),
+            ("dwReserved", wintypes.DWORD),
+            ("FlagsEx", wintypes.DWORD),
+        ]
+
+    archivo_buffer = ctypes.create_unicode_buffer(32768)
+    archivo_buffer.value = nombre_sugerido
+
+    filtro_buffer = ctypes.create_unicode_buffer(
+        "Archivo Excel (*.xlsx)\0*.xlsx\0Todos los archivos (*.*)\0*.*\0\0"
     )
 
+    user32 = ctypes.windll.user32
+    user32.GetForegroundWindow.restype = wintypes.HWND
+
+    ofn = OPENFILENAMEW()
+    ofn.lStructSize = ctypes.sizeof(OPENFILENAMEW)
+    ofn.hwndOwner = user32.GetForegroundWindow()
+    ofn.lpstrFilter = ctypes.cast(filtro_buffer, wintypes.LPCWSTR)
+    ofn.nFilterIndex = 1
+    ofn.lpstrFile = ctypes.cast(archivo_buffer, wintypes.LPWSTR)
+    ofn.nMaxFile = len(archivo_buffer)
+    ofn.lpstrTitle = "Guardar tabla en Excel"
+    ofn.lpstrDefExt = "xlsx"
+    ofn.Flags = (
+        OFN_OVERWRITEPROMPT
+        | OFN_NOCHANGEDIR
+        | OFN_PATHMUSTEXIST
+        | OFN_EXPLORER
+    )
+
+    resultado = ctypes.windll.comdlg32.GetSaveFileNameW(
+        ctypes.byref(ofn)
+    )
+
+    if not resultado:
+        error = ctypes.windll.comdlg32.CommDlgExtendedError()
+
+        # 0 significa que el usuario simplemente pulsó Cancelar.
+        if error == 0:
+            return None
+
+        raise OSError(
+            f"Windows no pudo abrir el cuadro Guardar como (código {error})."
+        )
+
+    ruta = archivo_buffer.value
+
+    if not ruta.lower().endswith(".xlsx"):
+        ruta += ".xlsx"
+
+    return ruta
+
+
+def guardar_dataframe_excel_windows(
+    df_exportar,
+    nombre_archivo,
+    nombre_hoja="Datos"
+):
+    """Pregunta dónde guardar y escribe el Excel directamente en esa ruta."""
+
+    ruta = elegir_ruta_excel_windows(
+        nombre_archivo
+    )
+
+    if not ruta:
+        return None
+
+    datos_excel = dataframe_a_excel(
+        df_exportar,
+        nombre_hoja
+    )
+
+    with open(ruta, "wb") as archivo:
+        archivo.write(datos_excel)
+
+    return ruta
+
+
+# ============================================================
+# TÍTULOS PRINCIPALES
+# La interfaz se divide en dos secciones principales:
+# 1) Base de datos de jugadores
+# 2) Selección de equipo para la alineación
+# ============================================================
+
+# ============================================================
+# CARGAR ARCHIVO
+# El uploader se dibuja al FINAL de la app, pero su valor se
+# puede recuperar aquí desde session_state en cada rerun.
+# ============================================================
+
+archivo_subido = st.session_state.get(
+    "archivo_csv",
+    None
+)
 
 try:
 
@@ -457,8 +1156,14 @@ except FileNotFoundError:
     )
 
     st.info(
-        "Coloca jugadores_rfaf.csv "
-        "en la misma carpeta que app.py."
+        "Coloca jugadores_rfaf.csv en la misma carpeta que app.py "
+        "o carga un CSV aquí."
+    )
+
+    st.file_uploader(
+        "Selecciona un CSV",
+        type=["csv"],
+        key="archivo_csv"
     )
 
     st.stop()
@@ -472,14 +1177,291 @@ df = separar_competiciones(
     df_original
 )
 
+df_objetivos = df[
+    df["Es_objetivo"]
+    .fillna(False)
+].copy()
+
 
 # ============================================================
-# FILTROS SUPERIORES
+# EXPLORADOR DE TODA LA BASE DE DATOS
 # ============================================================
 
-col_temporada, col_liga, col_grupo, col_equipo = st.columns(
-    [1, 2.2, 1.5, 2.2]
+st.subheader(
+    "Base de datos de jugadores"
 )
+
+def opciones_texto(serie):
+    """Devuelve valores de texto únicos, limpios y ordenados."""
+
+    return sorted(
+        {
+            texto_seguro(valor)
+            for valor in serie
+            if texto_seguro(valor)
+        }
+    )
+
+
+def filtrar_por_texto(df_base, columna, valor):
+    """Aplica un filtro exacto de texto si no se eligió 'Todos'."""
+
+    if valor == "Todos" or columna not in df_base.columns:
+        return df_base
+
+    return df_base[
+        df_base[columna]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .eq(str(valor).strip())
+    ].copy()
+
+
+# ------------------------------------------------------------
+# FILTROS DESPLEGABLES
+# ------------------------------------------------------------
+
+# 1) Año de nacimiento: filtro principal
+anos_disponibles = sorted(
+    pd.to_numeric(
+        df_original["Ano_nacimiento"],
+        errors="coerce"
+    )
+    .dropna()
+    .astype(int)
+    .unique()
+    .tolist()
+)
+
+col_anio, col_temporada_bd, col_categoria_bd = st.columns(3)
+
+with col_anio:
+    anio_bd = st.selectbox(
+        "Año de nacimiento",
+        ["Todos"] + anos_disponibles,
+        key="bd_anio"
+    )
+
+# Comenzamos a encadenar los filtros
+# para que los siguientes desplegables solo enseñen valores posibles.
+df_explorador = df_original.copy()
+
+if anio_bd != "Todos":
+    ano_numerico = pd.to_numeric(
+        df_explorador["Ano_nacimiento"],
+        errors="coerce"
+    )
+
+    df_explorador = df_explorador[
+        ano_numerico.eq(int(anio_bd))
+    ].copy()
+
+
+with col_temporada_bd:
+    temporadas_bd = opciones_texto(
+        df_explorador["Temporada"]
+    ) if "Temporada" in df_explorador.columns else []
+
+    temporada_bd = st.selectbox(
+        "Temporada",
+        ["Todos"] + temporadas_bd,
+        key="bd_temporada"
+    )
+
+
+df_explorador = filtrar_por_texto(
+    df_explorador,
+    "Temporada",
+    temporada_bd
+)
+
+
+with col_categoria_bd:
+    categorias_bd = opciones_texto(
+        df_explorador["Categoria_origen"]
+    ) if "Categoria_origen" in df_explorador.columns else []
+
+    categoria_bd = st.selectbox(
+        "Categoría",
+        ["Todos"] + categorias_bd,
+        key="bd_categoria"
+    )
+
+
+df_explorador = filtrar_por_texto(
+    df_explorador,
+    "Categoria_origen",
+    categoria_bd
+)
+
+
+col_competicion_bd, col_grupo_bd, col_equipo_bd = st.columns(3)
+
+with col_competicion_bd:
+    competiciones_bd = opciones_texto(
+        df_explorador["Competicion_origen"]
+    ) if "Competicion_origen" in df_explorador.columns else []
+
+    competicion_bd = st.selectbox(
+        "Competición",
+        ["Todos"] + competiciones_bd,
+        key="bd_competicion"
+    )
+
+
+df_explorador = filtrar_por_texto(
+    df_explorador,
+    "Competicion_origen",
+    competicion_bd
+)
+
+
+with col_grupo_bd:
+    grupos_bd = opciones_texto(
+        df_explorador["Grupo_origen"]
+    ) if "Grupo_origen" in df_explorador.columns else []
+
+    grupo_bd = st.selectbox(
+        "Grupo",
+        ["Todos"] + grupos_bd,
+        key="bd_grupo"
+    )
+
+
+df_explorador = filtrar_por_texto(
+    df_explorador,
+    "Grupo_origen",
+    grupo_bd
+)
+
+
+with col_equipo_bd:
+    equipos_bd = opciones_texto(
+        df_explorador["Equipo_origen"]
+    ) if "Equipo_origen" in df_explorador.columns else []
+
+    equipo_bd = st.selectbox(
+        "Equipo",
+        ["Todos"] + equipos_bd,
+        key="bd_equipo"
+    )
+
+
+df_explorador = filtrar_por_texto(
+    df_explorador,
+    "Equipo_origen",
+    equipo_bd
+)
+
+
+# Jugador se busca escribiendo nombre o apellido.
+# No usamos un desplegable porque la lista puede contener miles de nombres.
+busqueda_jugador_bd = st.text_input(
+    "Jugador",
+    placeholder="Escribe nombre o apellido...",
+    key="bd_jugador_busqueda"
+)
+
+if busqueda_jugador_bd.strip() and "Jugador" in df_explorador.columns:
+
+    df_explorador = df_explorador[
+        df_explorador["Jugador"]
+        .fillna("")
+        .astype(str)
+        .str.contains(
+            busqueda_jugador_bd.strip(),
+            case=False,
+            na=False,
+            regex=False
+        )
+    ].copy()
+
+
+columnas_bd = [
+    "Jugador",
+    "Ano_nacimiento",
+    "Temporada",
+    "Categoria_origen",
+    "Competicion_origen",
+    "Grupo_origen",
+    "Equipo_origen",
+    "Club_en_temporada",
+    "Estado",
+    "Convocados",
+    "Titular",
+    "Suplente",
+    "Jugados",
+    "Total_Goles",
+    "Media_Goles",
+    "Amarillas",
+    "Rojas",
+    "Doble_Amarilla"
+]
+
+columnas_bd = [
+    columna
+    for columna in columnas_bd
+    if columna in df_explorador.columns
+]
+
+st.caption(
+    f"{len(df_explorador):,} registros mostrados"
+    .replace(",", ".")
+)
+
+tabla_bd = df_explorador[
+    columnas_bd
+].copy()
+
+st.dataframe(
+    tabla_bd,
+    width="stretch",
+    height=430,
+    hide_index=True
+)
+
+# Guardado Excel DEBAJO de la tabla usando el diálogo nativo de Windows.
+if st.button(
+    "📥 Guardar Excel (.xlsx)",
+    key="guardar_bd_excel"
+):
+    try:
+        ruta_guardada = guardar_dataframe_excel_windows(
+            tabla_bd,
+            "base_jugadores.xlsx",
+            "Base de jugadores"
+        )
+
+        if ruta_guardada:
+            st.toast(
+                "Excel guardado correctamente",
+                icon="✅"
+            )
+
+    except Exception as error:
+        st.error(
+            f"No se pudo guardar el Excel: {error}"
+        )
+
+
+# ============================================================
+# FILTROS PARA EL CAMPO DE FÚTBOL
+# ============================================================
+
+st.divider()
+
+st.subheader(
+    "Selección de equipo para la alineación"
+)
+
+if df_objetivos.empty:
+
+    st.warning(
+        "El archivo no contiene competiciones incluidas en OBJETIVOS."
+    )
+
+    st.stop()
 
 
 # ============================================================
@@ -487,13 +1469,16 @@ col_temporada, col_liga, col_grupo, col_equipo = st.columns(
 # ============================================================
 
 temporadas = sorted(
-    df["Temporada"]
+    df_objetivos["Temporada"]
     .dropna()
     .astype(str)
     .unique(),
     reverse=True
 )
 
+col_temporada, col_categoria = st.columns(
+    [1.2, 2]
+)
 
 with col_temporada:
 
@@ -503,10 +1488,61 @@ with col_temporada:
     )
 
 
-df_temporada = df[
-    df["Temporada"]
+df_temporada = df_objetivos[
+    df_objetivos["Temporada"]
     .astype(str)
     .eq(temporada)
+].copy()
+
+
+# ============================================================
+# CATEGORÍA
+# ============================================================
+
+orden_categorias = []
+
+for objetivo in OBJETIVOS:
+
+    categoria_objetivo = objetivo[
+        "categoria"
+    ]
+
+    if categoria_objetivo not in orden_categorias:
+
+        orden_categorias.append(
+            categoria_objetivo
+        )
+
+
+categorias_presentes = {
+    texto_seguro(valor)
+    for valor in (
+        df_temporada["Categoria_filtro"]
+        .dropna()
+        .unique()
+    )
+    if texto_seguro(valor)
+}
+
+
+categorias = [
+    categoria_objetivo
+    for categoria_objetivo in orden_categorias
+    if categoria_objetivo in categorias_presentes
+]
+
+
+with col_categoria:
+
+    categoria = st.selectbox(
+        "🏷️ Categoría",
+        categorias
+    )
+
+
+df_categoria = df_temporada[
+    df_temporada["Categoria_filtro"]
+    .eq(categoria)
 ].copy()
 
 
@@ -514,31 +1550,62 @@ df_temporada = df[
 # COMPETICIÓN
 # ============================================================
 
-ligas = sorted(
-    [
-        liga
+ligas_reales = [
+    liga
+    for liga in (
+        df_categoria["Liga_filtro"]
+        .dropna()
+        .astype(str)
+        .unique()
+    )
+    if liga.strip()
+    and liga.lower() != "nan"
+]
 
-        for liga in (
-            df_temporada["Liga_filtro"]
-            .dropna()
-            .astype(str)
-            .unique()
-        )
 
-        if liga.strip()
-        and liga.lower() != "nan"
-    ]
-)
+ligas = []
+
+for objetivo in OBJETIVOS:
+
+    if objetivo["categoria"] != categoria:
+        continue
+
+    for alias in objetivo["competicion"]:
+
+        coincidencias = [
+            liga_real
+            for liga_real in ligas_reales
+            if normalizar_texto(
+                liga_real
+            ) == normalizar_texto(
+                alias
+            )
+        ]
+
+        for coincidencia in coincidencias:
+
+            if coincidencia not in ligas:
+
+                ligas.append(
+                    coincidencia
+                )
 
 
 if not ligas:
 
     st.warning(
-        "No hay competiciones para esta temporada."
+        "No hay competiciones disponibles para esta categoría "
+        "en la temporada seleccionada."
     )
 
     st.stop()
 
+
+# La competición se muestra primero. A partir de ella decidimos
+# si esta categoría necesita selector de grupo o no.
+col_liga, col_filtros_dependientes = st.columns(
+    [2.2, 3.9]
+)
 
 with col_liga:
 
@@ -548,56 +1615,114 @@ with col_liga:
     )
 
 
-df_liga = df_temporada[
-    df_temporada["Liga_filtro"]
+df_liga = df_categoria[
+    df_categoria["Liga_filtro"]
     .eq(liga)
 ].copy()
 
 
 # ============================================================
 # GRUPO
+# Si OBJETIVOS contiene [None], la competición no tiene grupo y
+# el selector desaparece por completo.
 # ============================================================
 
-grupos_reales = sorted(
-    [
-        grupo
+grupos_configuracion = grupos_configurados(
+    categoria,
+    liga
+)
 
-        for grupo in (
+tiene_selector_grupo = any(
+    grupo_configurado is not None
+    for grupo_configurado in grupos_configuracion
+)
+
+
+if tiene_selector_grupo:
+
+    grupos_permitidos = [
+        grupo_configurado
+        for grupo_configurado in grupos_configuracion
+        if grupo_configurado is not None
+    ]
+
+    grupos_reales = [
+        grupo_real
+        for grupo_real in (
             df_liga["Grupo_filtro"]
             .dropna()
             .astype(str)
             .unique()
         )
-
-        if grupo.strip()
-        and grupo.lower() != "nan"
+        if grupo_real.strip()
+        and grupo_real.lower() != "nan"
     ]
-)
 
+    grupos_disponibles = []
 
-grupos = [
-    "Todos"
-] + grupos_reales
+    for grupo_configurado in grupos_permitidos:
 
+        existe_en_datos = any(
+            normalizar_grupo(
+                grupo_real
+            ) == normalizar_grupo(
+                grupo_configurado
+            )
+            for grupo_real in grupos_reales
+        )
 
-with col_grupo:
+        if existe_en_datos:
 
-    grupo = st.selectbox(
-        "📍 Grupo",
-        grupos
-    )
+            grupos_disponibles.append(
+                grupo_configurado
+            )
 
+    grupos = [
+        "Todos"
+    ] + grupos_disponibles
 
-if grupo != "Todos":
+    with col_filtros_dependientes:
 
-    df_grupo = df_liga[
-        df_liga["Grupo_filtro"]
-        .eq(grupo)
-    ].copy()
+        col_grupo, col_equipo = st.columns(
+            [1.7, 2.2]
+        )
+
+        with col_grupo:
+
+            grupo = st.selectbox(
+                "📍 Grupo",
+                grupos
+            )
+
+    if grupo != "Todos":
+
+        grupo_normalizado = normalizar_grupo(
+            grupo
+        )
+
+        df_grupo = df_liga[
+            df_liga["Grupo_filtro"]
+            .apply(
+                normalizar_grupo
+            )
+            .eq(
+                grupo_normalizado
+            )
+        ].copy()
+
+    else:
+
+        df_grupo = df_liga.copy()
 
 else:
 
+    # La competición no usa grupos: no mostramos ningún selector.
+    grupo = None
     df_grupo = df_liga.copy()
+
+    # En este caso el equipo ocupa todo el espacio derecho.
+    with col_filtros_dependientes:
+        col_equipo = st.container()
 
 
 # ============================================================
@@ -607,14 +1732,12 @@ else:
 equipos = sorted(
     [
         equipo
-
         for equipo in (
             df_grupo["Equipo_filtro"]
             .dropna()
             .astype(str)
             .unique()
         )
-
         if equipo.strip()
         and equipo.lower() != "nan"
     ]
@@ -692,114 +1815,8 @@ grupo_equipo = primer_valor(
 
 
 # ============================================================
-# CABECERA DEL EQUIPO
+# El equipo y la formación se muestran directamente en el campo
 # ============================================================
-
-st.divider()
-
-
-st.subheader(
-    f"{equipo} — {temporada}"
-)
-
-
-datos_competicion = [
-    liga
-]
-
-
-if grupo_equipo:
-
-    if grupo_equipo.lower().startswith(
-        "grupo"
-    ):
-
-        datos_competicion.append(
-            grupo_equipo
-        )
-
-    else:
-
-        datos_competicion.append(
-            f"Grupo {grupo_equipo}"
-        )
-
-
-if posicion_equipo:
-
-    datos_competicion.append(
-        f"Posición: {posicion_equipo}"
-    )
-
-
-if puntos_equipo:
-
-    datos_competicion.append(
-        f"Puntos: {puntos_equipo}"
-    )
-
-
-st.caption(
-    " · ".join(
-        datos_competicion
-    )
-)
-
-
-# ============================================================
-# ESTADÍSTICAS DEL EQUIPO
-# ============================================================
-
-col1, col2, col3, col4 = st.columns(
-    4
-)
-
-
-numero_jugadores = len(
-    plantilla
-)
-
-
-apariciones = int(
-    plantilla["Jugados"]
-    .fillna(0)
-    .sum()
-)
-
-
-titularidades = int(
-    plantilla["Titular"]
-    .fillna(0)
-    .sum()
-)
-
-
-goles = int(
-    plantilla["Total_Goles"]
-    .fillna(0)
-    .sum()
-)
-
-
-col1.metric(
-    "Jugadores",
-    numero_jugadores
-)
-
-col2.metric(
-    "Apariciones",
-    apariciones
-)
-
-col3.metric(
-    "Titularidades",
-    titularidades
-)
-
-col4.metric(
-    "Goles",
-    goles
-)
 
 
 # ============================================================
@@ -808,7 +1825,7 @@ col4.metric(
 # ============================================================
 
 st.sidebar.header(
-    "⚽ Alineación"
+    "Alineación"
 )
 
 
@@ -818,9 +1835,6 @@ formacion = st.sidebar.selectbox(
         FORMACIONES.keys()
     )
 )
-
-
-st.sidebar.divider()
 
 
 # ============================================================
@@ -854,7 +1868,7 @@ for puesto, x, y in puestos:
         f"alineacion_"
         f"{temporada}_"
         f"{liga}_"
-        f"{grupo}_"
+        f"{grupo if grupo is not None else 'SIN_GRUPO'}_"
         f"{equipo}_"
         f"{formacion}_"
         f"{puesto}"
@@ -1257,13 +2271,41 @@ if seleccionados:
         ]
 
 
+        tabla_xi = xi[
+            columnas_xi
+        ].copy()
+
         st.dataframe(
-            xi[
-                columnas_xi
-            ],
+            tabla_xi,
             width="stretch",
             hide_index=True
         )
+
+        # Guardado Excel DEBAJO de la tabla usando el diálogo nativo de Windows.
+        if st.button(
+            "📥 Guardar Excel (.xlsx)",
+            key="guardar_xi_excel"
+        ):
+            try:
+                ruta_guardada = guardar_dataframe_excel_windows(
+                    tabla_xi,
+                    (
+                        f"XI_{nombre_archivo_seguro(equipo)}_"
+                        f"{nombre_archivo_seguro(temporada)}.xlsx"
+                    ),
+                    "XI seleccionado"
+                )
+
+                if ruta_guardada:
+                    st.toast(
+                        "Excel guardado correctamente",
+                        icon="✅"
+                    )
+
+            except Exception as error:
+                st.error(
+                    f"No se pudo guardar el Excel: {error}"
+                )
 
 
 # ============================================================
@@ -1299,10 +2341,61 @@ with st.expander(
     ]
 
 
+    tabla_plantilla = plantilla[
+        columnas_tabla
+    ].copy()
+
     st.dataframe(
-        plantilla[
-            columnas_tabla
-        ],
+        tabla_plantilla,
         width="stretch",
         hide_index=True
+    )
+
+    # Guardado Excel DEBAJO de la tabla usando el diálogo nativo de Windows.
+    if st.button(
+        "📥 Guardar Excel (.xlsx)",
+        key="guardar_plantilla_excel"
+    ):
+        try:
+            ruta_guardada = guardar_dataframe_excel_windows(
+                tabla_plantilla,
+                (
+                    f"plantilla_{nombre_archivo_seguro(equipo)}_"
+                    f"{nombre_archivo_seguro(temporada)}.xlsx"
+                ),
+                "Plantilla"
+            )
+
+            if ruta_guardada:
+                st.toast(
+                    "Excel guardado correctamente",
+                    icon="✅"
+                )
+
+        except Exception as error:
+            st.error(
+                f"No se pudo guardar el Excel: {error}"
+            )
+
+# ============================================================
+# CAMBIAR ARCHIVO CSV
+# Se deja al final, como se solicitó.
+# ============================================================
+
+st.divider()
+
+with st.expander(
+    "📁 Cambiar archivo CSV",
+    expanded=False
+):
+
+    st.caption(
+        "El archivo cargado sustituye temporalmente a "
+        "jugadores_rfaf.csv mientras la app esté abierta."
+    )
+
+    st.file_uploader(
+        "Selecciona otro CSV",
+        type=["csv"],
+        key="archivo_csv"
     )

@@ -17,7 +17,7 @@ EXTRAER_COMPETICIONES_TEMPORADA = True
 
 TEMPORADAS = ["26-27", "25-26", "24-25"]
 TEMPORADAS_HISTORICAS = ["25-26", "24-25"]
-JORNADAS_BUSQUEDA = list(range(1, 35))
+JORNADAS_BUSQUEDA = list(range(1, 61))  # solo limite de seguridad; V12 se detiene al detectar la ultima jornada
 
 OBJETIVOS = [
     {
@@ -49,7 +49,7 @@ OBJETIVOS = [
     {
         "categoria": "FÚTBOL JUVENIL",
         "competicion": ["1ª JUVENIL", "PRIMERA JUVENIL"],
-        "grupos": ["1", "2"],
+        "grupos": ["Grupo 1 - Zaragoza", "Grupo 2 - Zaragoza"],
     },
     {
         "categoria": "FÚTBOL BASE",
@@ -261,7 +261,8 @@ def ui_root():
 def save_debug(name, root=None):
     try:
         DEBUG_DIR.mkdir(exist_ok=True)
-        root = root or ui_root()
+        if root is None:
+            root = ui_root()
         path = DEBUG_DIR / f"{name}_{int(time.time())}.xml"
         ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
         print(f"DEBUG XML: {path}")
@@ -557,18 +558,124 @@ def open_competition_group(category, aliases, group):
 # ============================================================
 
 def competition_scroll_top():
-    for _ in range(2):
+    """
+    Vuelve a la cabecera desplazando EL CONTENEDOR REAL del calendario.
+
+    El V9 usaba coordenadas fijas. En algunas pantallas esas coordenadas
+    caen fuera del Recycler/ScrollView y Android acepta el gesto pero la lista
+    no se mueve. Aqui usamos los bounds de competition-calendar-list.
+    """
+    stagnant = 0
+    last_signature = None
+    warned = False
+
+    for attempt in range(30):
         root = ui_root()
         tab = find_res(root, "competition-view-tab-0")
-        b = bounds_tuple(tab)
-        if b and b[1] < 900:
+        tb = bounds_tuple(tab)
+
+        # Si el tab ya esta realmente en la parte visible superior, hemos llegado.
+        if tb and tb[3] > 0 and tb[1] < 1200:
             return root
-        adb_input("swipe", 540, 750, 540, 1900, 170)
-        time.sleep(DELAY_SCROLL)
-    return ui_root()
+
+        calendar = find_res(root, "competition-calendar-list")
+        cb = bounds_tuple(calendar)
+        matches = results_signature(root)
+        signature = (
+            tb,
+            cb,
+            matches[0] if matches else None,
+            matches[-1] if matches else None,
+        )
+
+        if signature == last_signature:
+            stagnant += 1
+        else:
+            stagnant = 0
+        last_signature = signature
+
+        if not warned:
+            print("   ↥ Volviendo al selector de jornadas dentro del calendario...")
+            warned = True
+
+        moved = False
+        if cb:
+            x1, y1, x2, y2 = cb
+            # Recortamos a la pantalla fisica y evitamos bordes/gestos del sistema.
+            top = max(y1, 650)
+            bottom = min(y2, 2220)
+            height = bottom - top
+            if height >= 300:
+                x = max(x1 + 80, min((x1 + x2) // 2, x2 - 80))
+                # Dedo hacia ABAJO => contenido hacia ABAJO => volvemos a elementos anteriores.
+                sy = int(top + height * 0.28)
+                ey = int(top + height * 0.88)
+                if ey - sy >= 180:
+                    adb_input("swipe", x, sy, x, ey, 360)
+                    moved = True
+
+        if not moved:
+            # Fallback para versiones de la app cuyo contenedor no expone bounds utiles.
+            adb_input("swipe", 540, 1250, 540, 2150, 360)
+
+        time.sleep(max(DELAY_SCROLL, 0.24))
+
+        if stagnant >= 3:
+            # KEYCODE_MOVE_HOME (122), no es el boton HOME del telefono.
+            # Algunos RecyclerView lo interpretan como ir al principio.
+            adb_input("keyevent", "122")
+            time.sleep(0.18)
+            stagnant = 0
+
+    root = ui_root()
+    tab = find_res(root, "competition-view-tab-0")
+    tb = bounds_tuple(tab)
+    if not (tb and tb[3] > 0 and tb[1] < 1200):
+        print("   ⚠ No consegui volver a la cabecera automaticamente")
+        save_debug("competition_top_not_reached", root)
+    return root
+
+
+def matchday_controls(root):
+    """Devuelve flechas visibles del carrusel y la banda vertical donde estan las jornadas."""
+    prev_candidates = [
+        n for n in find_all_res(root, "day-slider-prev-button")
+        if bounds_tuple(n) and bounds_tuple(n)[3] > 0
+    ]
+    next_candidates = [
+        n for n in find_all_res(root, "day-slider-next-button")
+        if bounds_tuple(n) and bounds_tuple(n)[3] > 0
+    ]
+
+    # En la pantalla puede haber sliders conservados en el XML. Preferimos los que
+    # estan en la mitad superior y, dentro de ellos, los de mayor Y (selector de jornadas).
+    def choose(nodes):
+        usable = [n for n in nodes if bounds_tuple(n)[1] < 1500]
+        return max(usable, key=lambda n: bounds_tuple(n)[1], default=None)
+
+    prev_button = choose(prev_candidates)
+    next_button = choose(next_candidates)
+    bounds = [bounds_tuple(n) for n in (prev_button, next_button) if n is not None]
+
+    if bounds:
+        band_top = max(0, min(b[1] for b in bounds) - 180)
+        band_bottom = min(2400, max(b[3] for b in bounds) + 180)
+    else:
+        band_top, band_bottom = 550, 1150
+
+    return prev_button, next_button, band_top, band_bottom
 
 
 def select_matchday(number):
+    """
+    Selecciona una jornada y distingue tres resultados:
+      True  -> jornada encontrada/seleccionada
+      "END" -> el numero pedido esta por encima de la ultima jornada real
+      False -> fallo de navegacion/lectura de UI
+
+    V12 no depende de que existan 34/35 jornadas. Avanza hasta que el propio
+    slider confirma que ya no hay una jornada siguiente.
+    """
     print(f"→ Buscando jornada {number}")
     root = competition_scroll_top()
     tab = find_res(root, "competition-view-tab-0")
@@ -578,12 +685,21 @@ def select_matchday(number):
         root = ui_root()
 
     wanted = int(number)
-    for _ in range(15):
+    empty_retries = 0
+    last_visible = None
+    slider_stagnant = 0
+
+    for _ in range(24):
+        prev_button, next_button, band_top, band_bottom = matchday_controls(root)
+
         visible = []
         target = None
         for node in root.iter("node"):
             b = bounds_tuple(node)
-            if not b or not (650 <= b[1] <= 1050):
+            if not b:
+                continue
+            cy = (b[1] + b[3]) // 2
+            if not (band_top <= cy <= band_bottom):
                 continue
             value = (desc_of(node) or text_of(node)).strip()
             if not re.fullmatch(r"\d+", value):
@@ -596,7 +712,30 @@ def select_matchday(number):
                 target = node
 
         visible = sorted(set(visible))
+
+        if not visible:
+            empty_retries += 1
+            print(
+                f"   Jornadas visibles: [] -> selector fuera de pantalla; "
+                f"subiendo ({empty_retries}/5)..."
+            )
+            root = competition_scroll_top()
+            if empty_retries >= 4:
+                adb_input("keyevent", "122")  # MOVE_HOME
+                time.sleep(0.20)
+                root = ui_root()
+            tab = find_res(root, "competition-view-tab-0")
+            if tab is not None:
+                tap_node(tab)
+                time.sleep(DELAY_TAP)
+                root = ui_root()
+            if empty_retries >= 6:
+                return False
+            continue
+
+        empty_retries = 0
         print(f"   Jornadas visibles: {visible}")
+
         if wanted in visible:
             if target is not None:
                 print(f"   ✓ Pulsando jornada {wanted}")
@@ -606,28 +745,50 @@ def select_matchday(number):
                 print(f"   ✓ Jornada {wanted} ya seleccionada")
             return True
 
-        prev_button = next(
-            (n for n in find_all_res(root, "day-slider-prev-button") if bounds_tuple(n) and bounds_tuple(n)[1] > 650),
-            None,
-        )
-        next_button = next(
-            (n for n in find_all_res(root, "day-slider-next-button") if bounds_tuple(n) and bounds_tuple(n)[1] > 650),
-            None,
-        )
-
-        if visible and wanted < min(visible):
+        if wanted < min(visible):
             button = prev_button
-        elif visible and wanted > max(visible):
+        elif wanted > max(visible):
+            # Si no hay flecha siguiente (o ya esta deshabilitada), hemos llegado
+            # a la ultima jornada real de esta competicion/grupo.
+            if next_button is None or next_button.attrib.get("enabled") != "true":
+                print(
+                    f"   ✓ Fin de calendario detectado: ultima jornada {max(visible)}; "
+                    f"no existe la {wanted}."
+                )
+                return "END"
             button = next_button
         else:
-            middle = visible[len(visible) // 2] if visible else wanted
+            middle = visible[len(visible) // 2]
             button = prev_button if wanted < middle else next_button
 
         if button is None or button.attrib.get("enabled") != "true":
+            # Si buscabamos hacia delante y ya no podemos avanzar, tambien es fin.
+            if wanted > max(visible):
+                print(
+                    f"   ✓ Fin de calendario detectado: ultima jornada {max(visible)}; "
+                    f"no existe la {wanted}."
+                )
+                return "END"
             return False
+
+        # Detectar sliders que aparentan estar habilitados pero ya no cambian.
+        if last_visible == tuple(visible) and wanted > max(visible):
+            slider_stagnant += 1
+        else:
+            slider_stagnant = 0
+        last_visible = tuple(visible)
+
+        if slider_stagnant >= 2 and wanted > max(visible):
+            print(
+                f"   ✓ Fin de calendario detectado por slider sin avance: "
+                f"ultima jornada {max(visible)}."
+            )
+            return "END"
+
         tap_node(button)
         time.sleep(DELAY_TAP)
         root = ui_root()
+
     return False
 
 
@@ -714,7 +875,8 @@ def open_team_from_match(side_resource):
 
 
 def open_squad(team_root=None):
-    team_root = team_root or ui_root()
+    if team_root is None:
+        team_root = ui_root()
     button = find_res(team_root, "team-header-templates-button")
     if button is None:
         return None
@@ -723,7 +885,8 @@ def open_squad(team_root=None):
 
 
 def close_squad_to_team(root=None):
-    root = root or ui_root()
+    if root is None:
+        root = ui_root()
     button = find_res(root, "team-plantilla-close-button")
     if button is not None:
         tap_node(button)
@@ -767,6 +930,35 @@ def row_name_from_node(node):
     return candidates[0] if candidates else ""
 
 
+def squad_scrollview(root):
+    """Devuelve el ScrollView real de la plantilla."""
+    modal = find_res(root, "team-plantilla-modal")
+    if modal is None:
+        return None
+    for node in modal.iter("node"):
+        if node.attrib.get("class") == "android.widget.ScrollView" and node.attrib.get("scrollable") == "true":
+            return node
+    return None
+
+
+def squad_viewport(root):
+    """
+    Área realmente utilizable de la lista de plantilla.
+    Recorta la barra de navegación Android si se superpone al ScrollView.
+    """
+    scroll = squad_scrollview(root)
+    b = bounds_tuple(scroll)
+    if not b:
+        return (0, 700, 1080, 2190)
+
+    x1, y1, x2, y2 = b
+    nav = find_res(root, "android:id/navigationBarBackground")
+    nb = bounds_tuple(nav)
+    if nb and nb[1] > y1:
+        y2 = min(y2, nb[1])
+    return (x1, y1, x2, y2)
+
+
 def is_player_row_shape(node):
     if node.attrib.get("clickable") != "true":
         return False
@@ -778,16 +970,22 @@ def is_player_row_shape(node):
     x1, y1, x2, y2 = b
     width = x2 - x1
     height = y2 - y1
-    # Las filas de jugador de la app ocupan casi todo el ancho (~988px) y ~147px de alto.
-    # Permitimos fila recortada en los bordes del ScrollView.
-    return x1 <= 120 and x2 >= 900 and width >= 800 and 35 <= height <= 190 and y2 >= 700
+
+    # UIAutomator puede devolver bounds invertidos para filas ya recortadas por ARRIBA
+    # (por ejemplo y2 < y1). Esas filas no son pulsables en ese instante y se ignoran;
+    # reaparecerán con bounds normales al desplazar la lista.
+    if width <= 0 or height <= 0:
+        return False
+
+    # La fila normal ocupa casi todo el ancho y ronda 147 px de alto. Aceptamos
+    # bastante margen para distintos móviles/escalados, sin depender de coordenadas Y fijas.
+    return x1 <= 160 and x2 >= 850 and width >= 700 and 30 <= height <= 240
 
 
 def squad_rows(root):
     """
-    Devuelve TODAS las filas que parecen jugadores, incluidas las filas SIN NOMBRE.
-    Una fila sin nombre es fundamental: puede ser un jugador cuyo nombre esta vacio
-    tanto en Plantilla como en 26-27.
+    Devuelve todas las filas de jugador con geometría válida, incluidas filas SIN NOMBRE.
+    No exige que el centro esté dentro de una franja fija de pantalla.
     """
     modal = find_res(root, "team-plantilla-modal")
     if modal is None:
@@ -798,7 +996,7 @@ def squad_rows(root):
     for node in modal.iter("node"):
         if canon(text_of(node)) == canon("ENTRENADOR/A"):
             b = bounds_tuple(node)
-            trainer_y = b[1] if b else None
+            trainer_y = b[1] if b and b[3] > b[1] else None
             trainer_seen = True
             break
 
@@ -813,7 +1011,7 @@ def squad_rows(root):
 
     rows.sort(key=lambda r: (r["bounds"] or (0, 99999, 0, 0))[1])
 
-    # Crear fingerprint para filas anonimas usando los vecinos con nombre.
+    # Fingerprint estable para filas anónimas usando vecinos con nombre.
     for i, row in enumerate(rows):
         if row["name"]:
             row["fingerprint"] = "NAME:" + canon(row["name"])
@@ -828,71 +1026,236 @@ def squad_rows(root):
             if rows[j]["name"]:
                 next_name = rows[j]["name"]
                 break
-        # Los vecinos hacen que una fila vacia concreta pueda reconocerse tras reabrir Plantilla.
         row["fingerprint"] = f"BETWEEN:{canon(prev_name)}::{canon(next_name)}"
 
     return rows, trainer_seen
 
 
-def visible_row(node):
+def safe_row_tap_point(root, row):
+    """
+    Devuelve un punto pulsable dentro de la PARTE REALMENTE VISIBLE de la fila.
+
+    Es clave para el ultimo jugador de una plantilla: Android puede superponer la
+    barra de navegacion sobre la parte inferior del ScrollView y la app puede no
+    permitir mas scroll. En ese caso no intentamos centrar infinitamente la fila;
+    pulsamos la porcion que queda libre por encima de la barra del sistema.
+    """
+    b = row.get("bounds") or bounds_tuple(row.get("node"))
+    if not b or b[2] <= b[0] or b[3] <= b[1]:
+        return None
+
+    left, top, right, bottom = squad_viewport(root)
+    y1 = max(b[1], top)
+    y2 = min(b[3], bottom)
+    x1 = max(b[0], left)
+    x2 = min(b[2], right)
+
+    # Dejamos margen respecto a barra superior/inferior y bordes de fila.
+    y1 += 18
+    y2 -= 18
+    if y2 - y1 < 34 or x2 - x1 < 120:
+        return None
+
+    # X central de la fila; Y central solo de la franja visible y segura.
+    return ((x1 + x2) // 2, (y1 + y2) // 2)
+
+
+def row_visibility(root, row):
+    """Devuelve (interseca, segura_para_tap, visible_px)."""
+    b = row.get("bounds") or bounds_tuple(row.get("node"))
+    if not b or b[2] <= b[0] or b[3] <= b[1]:
+        return False, False, 0
+
+    _, top, _, bottom = squad_viewport(root)
+    y1, y2 = b[1], b[3]
+    visible_px = max(0, min(y2, bottom) - max(y1, top))
+    intersects = visible_px >= 24
+
+    # V12: no exigimos que el CENTRO geometrico de toda la fila este lejos del
+    # borde. Basta con que exista una zona visible segura donde podamos pulsar.
+    safe = intersects and safe_row_tap_point(root, row) is not None
+    return intersects, safe, visible_px
+
+
+def tap_squad_row(root, row):
+    """Pulsa la fila en su porcion visible, evitando la barra de navegacion Android."""
+    point = safe_row_tap_point(root, row)
+    if point is None:
+        return False
+    adb_input("tap", point[0], point[1])
+    return True
+
+
+def visible_row(node, root=None):
+    # Compatibilidad con llamadas antiguas; ahora usa el viewport real si hay root.
     b = bounds_tuple(node)
     if not b or b[2] <= b[0] or b[3] <= b[1]:
         return False
-    cy = (b[1] + b[3]) // 2
-    return 700 <= cy <= 2190
+    if root is None:
+        cy = (b[1] + b[3]) // 2
+        return 650 <= cy <= 2210
+    row = {"node": node, "bounds": b}
+    return row_visibility(root, row)[0]
 
 
-def squad_scroll_down_safe():
-    # ~150 px: aproximadamente una fila, con mucho solapamiento.
-    adb_input("swipe", 540, 1780, 540, 1630, 280)
+def squad_position_signature(root, rows):
+    """
+    Firma sensible al MOVIMIENTO, no solo a los nombres.
+    Si los mismos jugadores cambian de Y, el scroll sí avanzó.
+    """
+    top = squad_viewport(root)[1]
+    sig = []
+    for r in rows:
+        b = r.get("bounds")
+        if not b or b[3] <= b[1]:
+            continue
+        # cuantizamos unos pocos píxeles para evitar ruido de renderizado
+        y1 = ((b[1] - top) // 8) * 8
+        y2 = ((b[3] - top) // 8) * 8
+        sig.append((r["fingerprint"], y1, y2))
+    return tuple(sig)
+
+
+def squad_swipe(root, distance=180, direction="down"):
+    """Hace el gesto dentro del ScrollView real, adaptándose al tamaño de pantalla."""
+    _, top, _, bottom = squad_viewport(root)
+    if bottom - top < 250:
+        return
+
+    x = 540
+    start = min(bottom - 180, top + int((bottom - top) * 0.72))
+    dist = max(100, min(int(distance), max(120, bottom - top - 260)))
+
+    if direction == "down":
+        # dedo hacia arriba => contenido baja hacia el final
+        end = max(top + 160, start - dist)
+    else:
+        # dedo hacia abajo => contenido vuelve hacia arriba
+        end = min(bottom - 150, start + dist)
+
+    adb_input("swipe", x, start, x, end, 300)
     time.sleep(DELAY_SCROLL)
+
+
+def center_pending_row(root, row):
+    """
+    Si una fila pendiente está parcialmente visible en cualquier borde, no la pierde:
+    desplaza la lista hasta dejarla en una zona segura y vuelve a leer el XML.
+    """
+    b = row.get("bounds")
+    if not b:
+        return False
+    _, top, _, bottom = squad_viewport(root)
+    cy = (b[1] + b[3]) // 2
+    target = (top + bottom) // 2
+    delta = cy - target
+
+    if abs(delta) < 80:
+        delta = 120 if cy > target else -120
+
+    distance = max(140, min(abs(delta), 650))
+    squad_swipe(root, distance=distance, direction="down" if delta > 0 else "up")
+    return True
+
+
+def squad_scroll_down_safe(root):
+    # Paso pequeño con solapamiento; calculado dentro del ScrollView real.
+    squad_swipe(root, distance=170, direction="down")
+
+
+def squad_scroll_down_force(root):
+    # Rescate más fuerte, también dentro del ScrollView real.
+    squad_swipe(root, distance=620, direction="down")
+    time.sleep(max(DELAY_SCROLL, 0.22))
 
 
 def find_first_pending_player(root, category, competition, group, team_name):
     """
-    Recorre Plantilla lentamente y devuelve el primer pendiente.
-    Tambien devuelve filas anonimas clicables.
+    Recorre Plantilla sin depender de coordenadas fijas.
+
+    Reglas:
+      1) cualquier fila pendiente que interseque el viewport se detecta;
+      2) si está cortada/pegada a un borde, primero se centra y se vuelve a leer;
+      3) el movimiento se comprueba por nombres + posiciones Y;
+      4) solo ENTRENADOR/A confirma el final real de Plantilla.
     """
     stagnant = 0
     last_signature = None
+    rescue_rounds = 0
 
-    for _ in range(120):
+    for _ in range(260):
         rows, trainer_seen = squad_rows(root)
 
         for row in rows:
-            node = row["node"]
-            if not visible_row(node):
+            intersects, safe, _ = row_visibility(root, row)
+            if not intersects:
                 continue
 
             name = row["name"]
             if name:
                 if player_key(category, competition, group, team_name, name) in JUGADORES_OK:
                     continue
+                if not safe:
+                    print(f"      ↕ Pendiente parcialmente visible: {name}; centrando fila...")
+                    center_pending_row(root, row)
+                    root = ui_root()
+                    # IMPORTANTE: no usamos el node viejo después del scroll.
+                    break
                 return row, root, trainer_seen
 
-            # Fila anonima.
+            # Fila anónima.
             akey = anon_key(category, competition, group, team_name, row["fingerprint"])
             mapped_name = clean_text(ANON_ROW_MAP.get(akey, ""))
             if mapped_name and player_key(category, competition, group, team_name, mapped_name) in JUGADORES_OK:
                 continue
+            if not safe:
+                print("      ↕ Fila sin nombre parcialmente visible; centrando fila...")
+                center_pending_row(root, row)
+                root = ui_root()
+                break
             row["anon_key"] = akey
             return row, root, trainer_seen
-
-        if trainer_seen:
-            return None, root, True
-
-        signature = tuple((canon(r["name"]), r["fingerprint"]) for r in rows)
-        if signature and signature == last_signature:
-            stagnant += 1
         else:
-            stagnant = 0
-        last_signature = signature
+            # Solo se ejecuta si el for de filas terminó sin break por centrado.
+            if trainer_seen:
+                return None, root, True
 
-        if stagnant >= 7:
-            return None, root, False
+            signature = squad_position_signature(root, rows)
+            if signature and signature == last_signature:
+                stagnant += 1
+            else:
+                stagnant = 0
+                rescue_rounds = 0
+            last_signature = signature
 
-        squad_scroll_down_safe()
-        root = ui_root()
+            if stagnant >= 3:
+                squad_scroll_down_force(root)
+                root = ui_root()
+                rescue_rounds += 1
+                stagnant = 0
+
+                if rescue_rounds >= 6:
+                    # Último empuje muy largo dentro del viewport real.
+                    squad_swipe(root, distance=1000, direction="down")
+                    time.sleep(0.28)
+                    root = ui_root()
+                    rows2, trainer_seen2 = squad_rows(root)
+                    if trainer_seen2:
+                        return None, root, True
+                    signature2 = squad_position_signature(root, rows2)
+                    if signature2 != last_signature:
+                        last_signature = signature2
+                        rescue_rounds = 0
+                        continue
+                    return None, root, False
+                continue
+
+            squad_scroll_down_safe(root)
+            root = ui_root()
+            continue
+
+        # Llegamos aquí si centramos una fila parcial.
+        continue
 
     return None, root, False
 
@@ -1369,7 +1732,13 @@ def process_team(category, competition, group, side_resource):
                 print(f"\n      → {roster_name}")
                 print(f"         Si termina: {done + 1}/{expected}")
 
-            tap_node(row["node"])
+            # V12: no pulsamos el centro XML de la fila porque puede quedar debajo
+            # de la barra de navegacion del sistema. Pulsamos solo la franja visible.
+            if not tap_squad_row(squad_root, row):
+                print("      ⚠ La fila no tiene una zona segura para pulsar; reintentando scroll")
+                squad_scroll_down_force(squad_root)
+                squad_root = ui_root()
+                continue
             player_root = after_action("player", delay=0.14, timeout=3.0)
             if player_root is None:
                 print("      ⚠ No abrió el jugador")
@@ -1484,7 +1853,10 @@ def process_match(category, competition, group, item):
 
 
 def process_matchday(category, competition, group, matchday, max_matches=None):
-    if not select_matchday(matchday):
+    selection = select_matchday(matchday)
+    if selection == "END":
+        return "END"
+    if selection is not True:
         print(f"⚠ No pude seleccionar jornada {matchday}")
         return False
 
@@ -1522,11 +1894,37 @@ def process_matchday(category, competition, group, matchday, max_matches=None):
     return True
 
 
+def completed_group_key_for_target(target, group):
+    """
+    Permite saltar un grupo ANTES de abrir la categoria/competicion.
+    Se prueban todos los alias de competicion porque el checkpoint guarda
+    el nombre exacto que encontro la app en la ejecucion original.
+    """
+    category = target["categoria"]
+    requested_group = str(group) if group is not None else ""
+    for competition_alias in target["competicion"]:
+        candidate = key_text(category, competition_alias, requested_group)
+        if candidate in GRUPOS_OK:
+            return candidate, competition_alias
+    return None, None
+
+
 def process_target(target, group):
     category = target["categoria"]
+
+    completed_key, completed_alias = completed_group_key_for_target(target, group)
+    if completed_key is not None:
+        print(
+            f"✓ Ya completado: {completed_alias} | "
+            f"Grupo {str(group) if group is not None else '-'} (sin abrirlo)"
+        )
+        return True
+
     competition, real_group = open_competition_group(category, target["competicion"], group)
     gkey = key_text(category, competition, real_group)
 
+    # Compatibilidad con checkpoints antiguos o con etiquetas de grupo que la app
+    # haya normalizado de forma distinta al valor configurado.
     if gkey in GRUPOS_OK:
         print(f"✓ Ya completado: {competition} | Grupo {real_group or '-'}")
         return True
@@ -1536,17 +1934,27 @@ def process_target(target, group):
     print("=" * 70)
 
     days = [1] if MODO_PRUEBA else JORNADAS_BUSQUEDA
+    last_day_ok = 0
     for day in days:
-        if not process_matchday(
+        status = process_matchday(
             category,
             competition,
             real_group,
             day,
             max_matches=(1 if MODO_PRUEBA else None),
-        ):
+        )
+        if status == "END":
+            print(f"✓ Calendario terminado automáticamente en jornada {last_day_ok}.")
+            break
+        if status is not True:
             return False
+        last_day_ok = day
         if MODO_PRUEBA:
             break
+    else:
+        if not MODO_PRUEBA:
+            print("⚠ Se alcanzó el límite de seguridad de 60 jornadas sin detectar el final.")
+            return False
 
     if not MODO_PRUEBA:
         GRUPOS_OK.add(gkey)
@@ -1561,9 +1969,9 @@ def main():
     global CHECKPOINT, JUGADORES_OK, EQUIPOS_OK, PARTIDOS_OK, GRUPOS_OK, ANON_ROW_MAP
 
     print("\n" + "=" * 70)
-    print("SCRAPER RFAF V7")
+    print("SCRAPER RFAF V12")
     print("SOPORTE DE JUGADORES SIN NOMBRE EN PLANTILLA / 26-27")
-    print("SCROLL PLANTILLA: APROX. UNA FILA POR VEZ")
+    print("SCROLL PLANTILLA: VIEWPORT REAL + TAP SEGURO EN FILAS RECORTADAS")
     print("CONTADOR APP = FUENTE DE VERDAD")
     print("=" * 70)
     print(f"Modo prueba: {MODO_PRUEBA}")
