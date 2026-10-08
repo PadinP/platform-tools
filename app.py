@@ -110,7 +110,7 @@ def cargar_datos(archivo):
     )
 
     columnas_numericas = [
-        "Ano_nacimiento",
+        "Año_nacimiento",
         "Convocados",
         "Titular",
         "Suplente",
