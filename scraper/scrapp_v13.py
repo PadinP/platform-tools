@@ -76,7 +76,7 @@ COLUMNAS = [
     "Grupo_origen",
     "Equipo_origen",
     "Jugador",
-    "Ano_nacimiento",
+    "Año_nacimiento",
     "Club_en_temporada",
     "Estado",
     "Convocados",
@@ -391,7 +391,7 @@ def csv_key(row):
         canon(row.get("Grupo_origen")),
         canon(row.get("Equipo_origen")),
         canon(row.get("Jugador")),
-        str(row.get("Ano_nacimiento", "")).strip(),
+        str(row.get("Año_nacimiento", "")).strip(),
     )
 
 
@@ -1577,7 +1577,7 @@ def build_row(category, competition, group, team, season, data, resolved_name, r
         "Grupo_origen": group or "",
         "Equipo_origen": team,
         "Jugador": resolved_name,
-        "Ano_nacimiento": data.get("Ano") or resolved_year,
+        "Año_nacimiento": data.get("Ano") or resolved_year,
         "Club_en_temporada": data.get("Club") or "",
         "Estado": data.get("Estado") or "",
         "Convocados": data.get("Convocados"),

@@ -773,7 +773,7 @@ def filtrar_por_texto(df_base, columna, valor):
 # 1) Año de nacimiento: filtro principal
 anos_disponibles = sorted(
     pd.to_numeric(
-        df_original["Ano_nacimiento"],
+        df_original["Año_nacimiento"],
         errors="coerce"
     )
     .dropna()
@@ -797,7 +797,7 @@ df_explorador = df_original.copy()
 
 if anio_bd != "Todos":
     ano_numerico = pd.to_numeric(
-        df_explorador["Ano_nacimiento"],
+        df_explorador["Año_nacimiento"],
         errors="coerce"
     )
 
@@ -928,7 +928,7 @@ if busqueda_jugador_bd.strip() and "Jugador" in df_explorador.columns:
 
 columnas_bd = [
     "Jugador",
-    "Ano_nacimiento",
+    "Año_nacimiento",
     "Temporada",
     "Categoria_origen",
     "Competicion_origen",
@@ -1784,7 +1784,7 @@ if seleccionados:
         columnas_xi = [
             "Puesto",
             "Jugador",
-            "Ano_nacimiento",
+            "Año_nacimiento",
             "Jugados",
             "Titular",
             "Suplente",
@@ -1831,7 +1831,7 @@ with st.expander(
 
     columnas_tabla = [
         "Jugador",
-        "Ano_nacimiento",
+        "Año_nacimiento",
         "Estado",
         "Convocados",
         "Titular",
