@@ -1,6 +1,7 @@
 # A partir de aquí empieza la aplicación Streamlit normal.
 import re
 import os
+import subprocess
 from io import BytesIO
 
 import pandas as pd
@@ -89,6 +90,43 @@ OBJETIVOS = [
 
 
 # ============================================================
+# VERIFICACIÓN DE CONEXIÓN ADB
+# ============================================================
+
+def verificar_conexion_adb():
+    # Busca adb.exe en la carpeta platform-tools o en la raíz
+    posibles_rutas = [
+        os.path.join("platform-tools", "adb.exe"),
+        "adb.exe"
+    ]
+    
+    adb_path = next((ruta for ruta in posibles_rutas if os.path.exists(ruta)), None)
+    
+    if not adb_path:
+        return False, "No se encuentra el archivo adb.exe en la carpeta platform-tools."
+    
+    try:
+        result = subprocess.run(
+            [adb_path, "devices"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=5
+        )
+        devices = [
+            line.split("\t")[0].strip()
+            for line in result.stdout.splitlines()[1:]
+            if "\tdevice" in line
+        ]
+        if not devices:
+            return False, "Conecta el móvil por USB y abre la app futbolAragon"
+        return True, devices[0]
+    except Exception as e:
+        return False, f"Error al comprobar ADB: {e}"
+
+
+# ============================================================
 # CARGAR DATOS (SUPABASE / CSV FALLBACK)
 # ============================================================
 
@@ -96,14 +134,12 @@ OBJETIVOS = [
 def cargar_datos(archivo=None):
     df = None
 
-    # 1. Intentar cargar desde Supabase si hay credenciales configuradas
     supabase_url = st.secrets.get("SUPABASE_URL") or os.environ.get("SUPABASE_URL")
     supabase_key = st.secrets.get("SUPABASE_KEY") or os.environ.get("SUPABASE_KEY")
 
     if supabase_url and supabase_key and archivo is None:
         try:
             supabase: Client = create_client(supabase_url, supabase_key)
-            # Paginación para obtener todos los registros de la tabla
             all_rows = []
             offset = 0
             limit = 1000
@@ -119,7 +155,6 @@ def cargar_datos(archivo=None):
 
             if all_rows:
                 df = pd.DataFrame(all_rows)
-                # Renombrar columnas de minúsculas de la BD a mayúsculas esperadas por app.py
                 mapeo_columnas = {
                     "temporada": "Temporada",
                     "categoria_origen": "Categoria_origen",
@@ -145,7 +180,6 @@ def cargar_datos(archivo=None):
         except Exception as e:
             st.warning(f"No se pudo conectar a Supabase, recurriendo a CSV local: {e}")
 
-    # 2. Si no hay Supabase o falló, recurrir al archivo local/subido
     if df is None:
         if archivo is not None:
             if hasattr(archivo, "seek"):
@@ -387,6 +421,46 @@ def dataframe_a_excel(df_exportar, nombre_hoja="Datos"):
         df_exportar.to_excel(writer, index=False, sheet_name=nombre_hoja)
     buffer.seek(0)
     return buffer.getvalue()
+
+
+# ============================================================
+# PANEL LATERAL: BOTÓN DE SCRAPING CON LLAMADA A SCRAPP_V13.PY
+# ============================================================
+
+st.sidebar.header("Panel de Control")
+if st.sidebar.button("🔄 Ejecutar Scraper y Actualizar BD"):
+    conectado, mensaje = verificar_conexion_adb()
+    if not conectado:
+        st.sidebar.error(mensaje)
+    else:
+        st.sidebar.success(f"Dispositivo conectado: {mensaje}. Ejecutando scraper...")
+        try:
+            env = os.environ.copy()
+            if "SUPABASE_URL" in st.secrets:
+                env["SUPABASE_URL"] = st.secrets["SUPABASE_URL"]
+            if "SUPABASE_KEY" in st.secrets:
+                env["SUPABASE_KEY"] = st.secrets["SUPABASE_KEY"]
+
+            # Llama al script ubicado dentro de la carpeta scraper/
+            ruta_scraper = os.path.join("scraper", "scrapp_v13.py")
+            proceso = subprocess.run(
+                ["python", ruta_scraper],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                env=env
+            )
+            if proceso.returncode == 0:
+                st.sidebar.success("¡Scraping finalizado y sincronizado con Supabase!")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.sidebar.error(f"Error en el scraper: {proceso.stderr}")
+        except Exception as e:
+            st.sidebar.error(f"No se pudo ejecutar el script: {e}")
+
+st.sidebar.divider()
 
 
 # ============================================================

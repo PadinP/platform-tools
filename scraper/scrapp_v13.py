@@ -1,5 +1,3 @@
-import csv
-import json
 import os
 import re
 import subprocess
@@ -17,7 +15,6 @@ except ImportError:
 # ============================================================
 # CONFIGURACION DE SUPABASE
 # ============================================================
-# Puedes configurar aquí tus credenciales o usar variables de entorno
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "TU_SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "TU_SUPABASE_ANON_KEY")
 
@@ -28,6 +25,8 @@ if SUPABASE_AVAILABLE and SUPABASE_URL.startswith("http"):
         print("✓ Conexión inicializada con Supabase")
     except Exception as e:
         print(f"⚠ No se pudo conectar a Supabase: {e}")
+        if not SUPABASE_AVAILABLE:
+            raise RuntimeError("La librería 'supabase' es obligatoria ahora que no se usan archivos locales.")
 
 # ============================================================
 # CONFIGURACION SCRAPER
@@ -80,8 +79,6 @@ OBJETIVOS = [
     },
 ]
 
-CSV_OUT = Path("jugadores_rfaf.csv")
-CHECKPOINT_OUT = Path("checkpoint_rfaf.json")
 DEBUG_DIR = Path("debug_rfaf")
 TMP_XML_DEVICE = "/sdcard/rfaf_scraper.xml"
 
@@ -90,32 +87,7 @@ DELAY_SCREEN = 0.18
 DELAY_SEASON = 0.30
 DELAY_SCROLL = 0.16
 
-COLUMNAS = [
-    "Temporada",
-    "Categoria_origen",
-    "Competicion_origen",
-    "Grupo_origen",
-    "Equipo_origen",
-    "Jugador",
-    "Año_nacimiento",
-    "Club_en_temporada",
-    "Estado",
-    "Convocados",
-    "Titular",
-    "Suplente",
-    "Jugados",
-    "Total_Goles",
-    "Media_Goles",
-    "Amarillas",
-    "Rojas",
-    "Doble_Amarilla",
-    "Competiciones_temporada",
-]
-
 DEVICE = None
-CSV_FILE = None
-CSV_WRITER = None
-CSV_KEYS = set()
 CHECKPOINT = None
 JUGADORES_OK = set()
 EQUIPOS_OK = set()
@@ -397,42 +369,13 @@ def after_action(expected, delay=DELAY_SCREEN, timeout=3.2):
         time.sleep(0.08)
 
 # ============================================================
-# CSV / SUPABASE / CHECKPOINT
+# SUPABASE / CHECKPOINTS EN TABLAS
 # ============================================================
-
-def csv_key(row):
-    return (
-        canon(row.get("Temporada")),
-        canon(row.get("Competicion_origen")),
-        canon(row.get("Grupo_origen")),
-        canon(row.get("Equipo_origen")),
-        canon(row.get("Jugador")),
-        str(row.get("Año_nacimiento", "")).strip(),
-    )
-
-
-def open_csv():
-    global CSV_FILE, CSV_WRITER, CSV_KEYS
-    exists = CSV_OUT.exists() and CSV_OUT.stat().st_size > 0
-    if exists:
-        with CSV_OUT.open("r", newline="", encoding="utf-8-sig") as f:
-            for row in csv.DictReader(f):
-                CSV_KEYS.add(csv_key(row))
-
-    CSV_FILE = CSV_OUT.open("a", newline="", encoding="utf-8-sig", buffering=1)
-    CSV_WRITER = csv.DictWriter(CSV_FILE, fieldnames=COLUMNAS, extrasaction="ignore")
-    if not exists:
-        CSV_WRITER.writeheader()
-        CSV_FILE.flush()
-    print(f"✓ CSV: {CSV_OUT.resolve()}")
-    print(f"✓ Filas existentes: {len(CSV_KEYS)}")
-
 
 def enviar_a_supabase(row):
     if not supabase_client:
         return
     try:
-        # Mapear nombres de claves a minúsculas para coincidir con la base de datos PostgreSQL
         db_row = {
             "temporada": row.get("Temporada"),
             "categoria_origen": row.get("Categoria_origen"),
@@ -458,41 +401,33 @@ def enviar_a_supabase(row):
             db_row, on_conflict="jugador, temporada, equipo_origen"
         ).execute()
     except Exception as e:
-        print(f"   ⚠ Error sincronizando con Supabase: {e}")
+        print(f"   ⚠ Error sincronizando con Supabase (`jugadores_rfaf`): {e}")
 
 
-def append_csv(row):
-    key = csv_key(row)
-    if key in CSV_KEYS:
-        return False
-    CSV_WRITER.writerow(row)
-    CSV_FILE.flush()
-    CSV_KEYS.add(key)
-    enviar_a_supabase(row)
-    return True
-
-
-def load_checkpoint():
-    if not CHECKPOINT_OUT.exists():
-        return {
-            "jugadores": [],
-            "equipos": [],
-            "partidos": [],
-            "grupos": [],
-            "anonymous_rows": {},
-        }
+def load_checkpoint_from_supabase():
+    data = {
+        "jugadores": [],
+        "equipos": [],
+        "partidos": [],
+        "grupos": [],
+        "anonymous_rows": {},
+    }
+    if not supabase_client:
+        return data
     try:
-        data = json.loads(CHECKPOINT_OUT.read_text(encoding="utf-8"))
-    except Exception:
-        data = {}
-    for key in ("jugadores", "equipos", "partidos", "grupos"):
-        data.setdefault(key, [])
-    data.setdefault("anonymous_rows", {})
+        response = supabase_client.table("checkpoints_rfaf").select("id, data").execute()
+        for row in response.data:
+            item_id = row.get("id")
+            item_data = row.get("data")
+            if item_id in data and item_data is not None:
+                data[item_id] = item_data
+    except Exception as e:
+        print(f"⚠ No se pudieron cargar los checkpoints de Supabase: {e}")
     return data
 
 
-def save_checkpoint():
-    if CHECKPOINT is None:
+def save_checkpoint_to_supabase():
+    if not supabase_client or CHECKPOINT is None:
         return
     CHECKPOINT["jugadores"] = sorted(JUGADORES_OK)
     CHECKPOINT["equipos"] = sorted(EQUIPOS_OK)
@@ -500,9 +435,13 @@ def save_checkpoint():
     CHECKPOINT["grupos"] = sorted(GRUPOS_OK)
     CHECKPOINT["anonymous_rows"] = dict(ANON_ROW_MAP)
 
-    temp = CHECKPOINT_OUT.with_suffix(".tmp")
-    temp.write_text(json.dumps(CHECKPOINT, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp.replace(CHECKPOINT_OUT)
+    try:
+        for key, value in CHECKPOINT.items():
+            supabase_client.table("checkpoints_rfaf").upsert(
+                {"id": key, "data": value}, on_conflict="id"
+            ).execute()
+    except Exception as e:
+        print(f"⚠ Error guardando checkpoints en Supabase: {e}")
 
 
 def count_completed_team_players(category, competition, group, team):
@@ -1079,17 +1018,6 @@ def tap_squad_row(root, row):
     return True
 
 
-def visible_row(node, root=None):
-    b = bounds_tuple(node)
-    if not b or b[2] <= b[0] or b[3] <= b[1]:
-        return False
-    if root is None:
-        cy = (b[1] + b[3]) // 2
-        return 650 <= cy <= 2210
-    row = {"node": node, "bounds": b}
-    return row_visibility(root, row)[0]
-
-
 def squad_position_signature(root, rows):
     top = squad_viewport(root)[1]
     sig = []
@@ -1537,7 +1465,7 @@ def process_player(category, competition, group, team, roster_name, initial_root
 
     if anonymous_map_key:
         ANON_ROW_MAP[anonymous_map_key] = resolved_name
-        save_checkpoint()
+        save_checkpoint_to_supabase()
 
     if pkey in JUGADORES_OK:
         print(f"      ↪ Fila sin nombre resuelta como {resolved_name}; ya estaba procesado")
@@ -1554,20 +1482,21 @@ def process_player(category, competition, group, team, roster_name, initial_root
         if not valid_player_name(data.get("Jugador", "")):
             data["Jugador"] = resolved_name
 
-        if append_csv(
-            build_row(
-                category,
-                competition,
-                group,
-                team,
-                season,
-                data,
-                resolved_name,
-                resolved_year,
-                result["competitions"],
-            )
-        ):
-            new_rows += 1
+        row_data = build_row(
+            category,
+            competition,
+            group,
+            team,
+            season,
+            data,
+            resolved_name,
+            resolved_year,
+            result["competitions"],
+        )
+        
+        # Enviar directamente a la tabla `jugadores_rfaf` de Supabase
+        enviar_a_supabase(row_data)
+        new_rows += 1
 
         marker = "nombre recuperado" if season == "26-27" and name_2627_was_missing else ""
         suffix = f" | {marker}" if marker else ""
@@ -1577,8 +1506,8 @@ def process_player(category, competition, group, team, roster_name, initial_root
         )
 
     JUGADORES_OK.add(pkey)
-    save_checkpoint()
-    print(f"      ✓ {resolved_name} ({new_rows} filas nuevas)")
+    save_checkpoint_to_supabase()
+    print(f"      ✓ {resolved_name} ({new_rows} registros procesados)")
     return True, resolved_name
 
 
@@ -1717,7 +1646,7 @@ def process_team(category, competition, group, side_resource):
 
     EQUIPOS_OK.add(tkey)
     EQUIPOS_OK.add(hint_key)
-    save_checkpoint()
+    save_checkpoint_to_supabase()
     print(f"   ✓ EQUIPO COMPLETADO: {team_name} ({expected}/{expected})")
 
     back()
@@ -1732,7 +1661,7 @@ def process_match(category, competition, group, item):
 
     if mkey in PARTIDOS_OK or (local_key in EQUIPOS_OK and away_key in EQUIPOS_OK):
         PARTIDOS_OK.add(mkey)
-        save_checkpoint()
+        save_checkpoint_to_supabase()
         print(f"   ↪ Partido ya cubierto: {item['local']} vs {item['visitante']}")
         return True
 
@@ -1775,7 +1704,7 @@ def process_match(category, competition, group, item):
         return False
 
     PARTIDOS_OK.add(mkey)
-    save_checkpoint()
+    save_checkpoint_to_supabase()
     print(f"✓ PARTIDO COMPLETADO: {local} vs {away}")
     return True
 
@@ -1875,7 +1804,7 @@ def process_target(target, group):
 
     if not MODO_PRUEBA:
         GRUPOS_OK.add(gkey)
-        save_checkpoint()
+        save_checkpoint_to_supabase()
     return True
 
 
@@ -1883,19 +1812,20 @@ def main():
     global CHECKPOINT, JUGADORES_OK, EQUIPOS_OK, PARTIDOS_OK, GRUPOS_OK, ANON_ROW_MAP
 
     print("\n" + "=" * 70)
-    print("SCRAPER RFAF V13 (CONECTADO A SUPABASE)")
+    print("SCRAPER RFAF V13 (100% SUPABASE)")
     print("=" * 70)
 
     detect_device()
-    open_csv()
-    CHECKPOINT = load_checkpoint()
+    
+    # Cargar checkpoints directamente desde Supabase
+    CHECKPOINT = load_checkpoint_from_supabase()
     JUGADORES_OK = set(CHECKPOINT.get("jugadores", []))
     EQUIPOS_OK = set(CHECKPOINT.get("equipos", []))
     PARTIDOS_OK = set(CHECKPOINT.get("partidos", []))
     GRUPOS_OK = set(CHECKPOINT.get("grupos", []))
     ANON_ROW_MAP = dict(CHECKPOINT.get("anonymous_rows", {}))
 
-    print(f"✓ Checkpoint: {len(EQUIPOS_OK)} equipos | {len(JUGADORES_OK)} jugadores | {len(PARTIDOS_OK)} partidos")
+    print(f"✓ Checkpoint desde Supabase: {len(EQUIPOS_OK)} equipos | {len(JUGADORES_OK)} jugadores | {len(PARTIDOS_OK)} partidos")
 
     targets = [OBJETIVOS[0]] if MODO_PRUEBA else OBJETIVOS
 
@@ -1904,15 +1834,12 @@ def main():
             groups = [None] if MODO_PRUEBA else target["grupos"]
             for group in groups:
                 if not process_target(target, group):
-                    print("\n⚠ Objetivo incompleto. CSV y checkpoint conservados.")
+                    print("\n⚠ Objetivo incompleto. Checkpoints sincronizados en Supabase.")
                     return
     except KeyboardInterrupt:
-        print("\n⏹ Detenido manualmente. CSV y checkpoint guardados.")
+        print("\n⏹ Detenido manualmente. Checkpoints guardados en Supabase.")
     finally:
-        save_checkpoint()
-        if CSV_FILE is not None:
-            CSV_FILE.flush()
-            CSV_FILE.close()
+        save_checkpoint_to_supabase()
 
     print("\n✓ PROCESO FINALIZADO")
 
