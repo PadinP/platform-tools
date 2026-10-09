@@ -29,10 +29,16 @@ if SUPABASE_AVAILABLE and SUPABASE_URL.startswith("http"):
             raise RuntimeError("La librería 'supabase' es obligatoria ahora que no se usan archivos locales.")
 
 # ============================================================
-# CONFIGURACION SCRAPER
+# CONFIGURACION SCRAPER Y BUSQUEDA DE ADB
 # ============================================================
 
-ADB = r".\adb.exe"
+POSIBLES_RUTAS_ADB = [
+    os.path.join("platform-tools", "tools", "adb.exe"),
+    os.path.join("platform-tools", "adb.exe"),
+    "adb.exe"
+]
+ADB = next((ruta for ruta in POSIBLES_RUTAS_ADB if os.path.exists(ruta)), "adb.exe")
+
 MODO_PRUEBA = False
 EXTRAER_COMPETICIONES_TEMPORADA = True
 
