@@ -1,5 +1,5 @@
 
-name: Probar Android en la nube
+name: Probar FutbolAragon en Android
 
 on:
   push:
@@ -24,15 +24,36 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Iniciar emulador Android
+      - name: Iniciar Android con Google Play
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 29
-          target: google_apis
+          target: google_apis_playstore
           arch: x86_64
           profile: pixel_6
           script: |
-            echo "Comprobando ADB"
+            echo "=== DISPOSITIVOS ==="
             adb devices
-            echo "Version de Android"
-            adb shell getprop ro.build.version.release
+
+            echo "=== GOOGLE PLAY ==="
+            adb shell pm list packages com.android.vending
+
+            echo "=== FUTBOLARAGON ==="
+            adb shell pm list packages com.novanet.FutbolAragonAppPublica
+
+            echo "=== ABRIENDO FICHA EN GOOGLE PLAY ==="
+            adb shell am start -a android.intent.action.VIEW \
+              -d "market://details?id=com.novanet.FutbolAragonAppPublica" \
+              -p com.android.vending
+            sleep 8
+
+            echo "=== CAPTURA DE PANTALLA ==="
+            adb exec-out screencap -p > pantalla_playstore.png
+
+      - name: Guardar captura de Android
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pantalla-playstore
+          path: pantalla_playstore.png
+          if-no-files-found: warn
