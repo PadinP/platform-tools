@@ -1,0 +1,38 @@
+
+name: Probar Android en la nube
+
+on:
+  push:
+    branches:
+      - feature/supabase
+
+permissions:
+  contents: read
+
+jobs:
+  probar-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Habilitar aceleracion KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Iniciar emulador Android
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          script: |
+            echo "Comprobando ADB"
+            adb devices
+            echo "Version de Android"
+            adb shell getprop ro.build.version.release
