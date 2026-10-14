@@ -235,7 +235,7 @@ def detect_device():
         for i, serial in enumerate(devices, 1):
             print(f"{i}. {serial}")
         DEVICE = devices[int(input("Selecciona dispositivo: ")) - 1]
-    print(f"✓ Dispositivo: {DEVICE}")
+    print(f"[OK] Dispositivo: {DEVICE}")
 
 # ============================================================
 # XML / UI
