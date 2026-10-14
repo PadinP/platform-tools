@@ -57,8 +57,14 @@ def supabase_headers(content_type="application/json"):
 
 def api_remota(metodo, ruta, **kwargs):
   base = st.secrets["SUPABASE_URL"].rstrip("/")
+  
+  # Fusionar cabeceras base con las opcionales de kwargs de forma limpia
+  headers = supabase_headers()
+  if "headers" in kwargs:
+    headers.update(kwargs.pop("headers"))
+
   r = requests.request(
-      metodo, base + ruta, headers=supabase_headers(), timeout=20, **kwargs
+      metodo, base + ruta, headers=headers, timeout=20, **kwargs
   )
   r.raise_for_status()
   return r
@@ -117,7 +123,7 @@ def panel_scraper():
                 "estado": "pendiente",
                 "mensaje": "Solicitud manual desde Streamlit Cloud",
             },
-            headers={**supabase_headers(), "Prefer": "return=representation"},
+            headers={"Prefer": "return=representation"},
         )
         st.success(
             "Solicitud enviada. El ordenador debe tener activo agente_local.py"
