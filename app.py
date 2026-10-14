@@ -38,13 +38,16 @@ CSV_PATH = "jugadores_rfaf.csv"
 
 
 def configuracion_remota():
-  return all(
-      k in st.secrets for k in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY")
+  return "SUPABASE_URL" in st.secrets and (
+      "SUPABASE_SECRET_KEY" in st.secrets
+      or "SUPABASE_SERVICE_ROLE_KEY" in st.secrets
   )
 
 
 def supabase_headers(content_type="application/json"):
-  key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
+  key = st.secrets.get("SUPABASE_SECRET_KEY") or st.secrets.get(
+      "SUPABASE_SERVICE_ROLE_KEY"
+  )
   return {
       "apikey": key,
       "Authorization": f"Bearer {key}",
@@ -82,7 +85,9 @@ def panel_scraper():
       return
 
     # --- BLOQUE DE DIAGNÓSTICO ADICIONAL ---
-    supabase_key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY", "")
+    supabase_key = st.secrets.get("SUPABASE_SECRET_KEY") or st.secrets.get(
+        "SUPABASE_SERVICE_ROLE_KEY", ""
+    )
     supabase_url = st.secrets.get("SUPABASE_URL", "")
     if supabase_key:
       st.success(
@@ -90,7 +95,7 @@ def panel_scraper():
       )
     else:
       st.error(
-          "❌ No se detecta la variable SUPABASE_SERVICE_ROLE_KEY en st.secrets"
+          "❌ No se detecta la variable SUPABASE_SECRET_KEY en st.secrets"
       )
 
     if st.button("Probar conexión GET con Supabase", key="probar_get_supa"):
