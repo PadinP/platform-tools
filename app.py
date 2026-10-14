@@ -1,5 +1,4 @@
 # A partir de aquí empieza la aplicación Streamlit normal.
-import hmac
 from io import BytesIO
 import re
 import requests
@@ -74,7 +73,7 @@ def leer_csv_remoto():
 
 
 def panel_scraper():
-  with st.expander("Actualizar datos desde el móvil (Windows)", expanded=False):
+  with st.expander("Actualizar datos desde el móvil (Windows)", expanded=True):
     if not configuracion_remota():
       st.info(
           "Para habilitar este panel configura los secretos de Supabase en"
@@ -82,10 +81,38 @@ def panel_scraper():
       )
       return
 
+    # --- BLOQUE DE DIAGNÓSTICO ADICIONAL ---
+    supabase_key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY", "")
+    supabase_url = st.secrets.get("SUPABASE_URL", "")
+    if supabase_key:
+      st.success(
+          f"✅ Clave detectada correctamente (Longitud: {len(supabase_key)} caracteres)"
+      )
+    else:
+      st.error(
+          "❌ No se detecta la variable SUPABASE_SERVICE_ROLE_KEY en st.secrets"
+      )
+
+    if st.button("Probar conexión GET con Supabase", key="probar_get_supa"):
+      try:
+        test_url = f"{supabase_url}/rest/v1/solicitudes_scraper?select=id"
+        response = requests.get(test_url, headers=supabase_headers(), timeout=10)
+        st.write(f"Código de estado HTTP: **{response.status_code}**")
+        st.json(response.json())
+      except Exception as e:
+        st.error(f"Error en la prueba de red: {e}")
+    # ---------------------------------------
+
     if st.button("Ejecutar Scraper y Actualizar BD", key="solicitar_scraping"):
       try:
         api_remota(
-            "POST", "/rest/v1/solicitudes_scraper", json={"estado": "pendiente"}
+            "POST",
+            "/rest/v1/solicitudes_scraper",
+            json={
+                "estado": "pendiente",
+                "mensaje": "Solicitud manual desde Streamlit Cloud",
+            },
+            headers={**supabase_headers(), "Prefer": "return=representation"},
         )
         st.success(
             "Solicitud enviada. El ordenador debe tener activo agente_local.py"
@@ -657,7 +684,9 @@ anos_disponibles = sorted(
 col_anio, col_temporada_bd, col_categoria_bd = st.columns(3)
 
 with col_anio:
-  anio_bd = st.selectbox("Año de nacimiento", ["Todos"] + anos_disponibles, key="bd_anio")
+  anio_bd = st.selectbox(
+      "Año de nacimiento", ["Todos"] + anos_disponibles, key="bd_anio"
+  )
 
 df_explorador = df_original.copy()
 
@@ -745,7 +774,9 @@ df_explorador = filtrar_por_texto(df_explorador, "Equipo_origen", equipo_bd)
 
 
 busqueda_jugador_bd = st.text_input(
-    "Jugador", placeholder="Escribe nombre o apellido...", key="bd_jugador_busqueda"
+    "Jugador",
+    placeholder="Escribe nombre o apellido...",
+    key="bd_jugador_busqueda",
 )
 
 if busqueda_jugador_bd.strip() and "Jugador" in df_explorador.columns:
@@ -780,7 +811,9 @@ columnas_bd = [
     "Doble_Amarilla",
 ]
 
-columnas_bd = [columna for columna in columnas_bd if columna in df_explorador.columns]
+columnas_bd = [
+    columna for columna in columnas_bd if columna in df_explorador.columns
+]
 
 st.caption(f"{len(df_explorador):,} registros mostrados".replace(",", "."))
 
@@ -823,7 +856,9 @@ with col_temporada:
   temporada = st.selectbox("📅 Temporada", temporadas)
 
 
-df_temporada = df_objetivos[df_objetivos["Temporada"].astype(str).eq(temporada)].copy()
+df_temporada = df_objetivos[
+    df_objetivos["Temporada"].astype(str).eq(temporada)
+].copy()
 
 
 # ============================================================
