@@ -2,9 +2,6 @@
 from io import BytesIO
 import re
 import requests
-import hashlib
-import secrets
-from datetime import datetime, timedelta, timezone
 
 import matplotlib.pyplot as plt
 from mplsoccer import VerticalPitch
@@ -51,192 +48,113 @@ def supabase_headers(content_type="application/json"):
   key = st.secrets.get("SUPABASE_SECRET_KEY") or st.secrets.get(
       "SUPABASE_SERVICE_ROLE_KEY"
   )
-  headers = {"apikey": key, "Content-Type": content_type}
-  # Claves actuales sb_secret_ usan solo apikey; JWT legacy admiten Bearer.
-  if not key.startswith("sb_secret_"):
-    headers["Authorization"] = f"Bearer {key}"
-  return headers
+  return {
+      "apikey": key,
+      "Authorization": f"Bearer {key}",
+      "Content-Type": content_type,
+  }
 
 
 def api_remota(metodo, ruta, **kwargs):
   base = st.secrets["SUPABASE_URL"].rstrip("/")
+  
+  # Fusionar cabeceras base con las opcionales de kwargs de forma limpia
   headers = supabase_headers()
   if "headers" in kwargs:
     headers.update(kwargs.pop("headers"))
+
   r = requests.request(
-      metodo, base + ruta, headers=headers, timeout=30, **kwargs
+      metodo, base + ruta, headers=headers, timeout=20, **kwargs
   )
   r.raise_for_status()
   return r
 
 
 def leer_csv_remoto():
-  """Lee la última publicación completada; acepta el CSV legacy si todavía existe."""
   if not configuracion_remota():
     return None
+  # Objeto privado: solo se lee por el servidor de Streamlit, no desde navegador.
   try:
-    r = api_remota(
-        "GET",
-        "/rest/v1/solicitudes_scraper"
-        "?select=archivo&estado=eq.completado&archivo=not.is.null"
-        "&order=terminado_en.desc&limit=1",
-    )
-    trabajos = r.json()
-    if trabajos and trabajos[0].get("archivo"):
-      # El nombre de archivo fue generado por el servidor y no por el cliente.
-      ruta = trabajos[0]["archivo"]
-      if not re.fullmatch(r"trabajos/[0-9a-fA-F-]{36}/jugadores_rfaf\.csv", ruta):
-        raise ValueError("Ruta de publicación no válida")
-      r = api_remota("GET", f"/storage/v1/object/futbolapp-data/{ruta}")
-      return BytesIO(r.content)
-    # Retrocompatibilidad con las publicaciones del agente antiguo.
     r = api_remota("GET", "/storage/v1/object/futbolapp-data/jugadores_rfaf.csv")
     return BytesIO(r.content)
-  except (requests.RequestException, ValueError):
+  except requests.RequestException:
     return None
-
-
-def obtener_agentes():
-  r = api_remota(
-      "GET",
-      "/rest/v1/agentes_scraper"
-      "?select=id,nombre,activo,ultima_vez&activo=eq.true&order=nombre.asc",
-  )
-  return r.json()
-
-
-def esta_en_linea(agente):
-  ultima = agente.get("ultima_vez")
-  if not ultima:
-    return False
-  try:
-    fecha = datetime.fromisoformat(str(ultima).replace("Z", "+00:00"))
-    return (datetime.now(timezone.utc) - fecha).total_seconds() <= 120
-  except (TypeError, ValueError):
-    return False
-
-
-def administrar_agentes():
-  with st.expander("Administrar ordenadores (solo administrador)"):
-    clave_admin = st.secrets.get("AGENT_ADMIN_PASSWORD", "")
-    if not clave_admin:
-      st.info("Añade AGENT_ADMIN_PASSWORD en Secrets de Streamlit para activar la vinculación.")
-      return
-
-    entrada = st.text_input("Contraseña de administración", type="password", key="rfaf_admin_pass")
-    if not entrada or not secrets.compare_digest(str(entrada), str(clave_admin)):
-      st.caption("Se necesita permiso de administrador para autorizar ordenadores nuevos.")
-      return
-
-    st.write("**Vincular otro ordenador**")
-    if st.button("Generar código temporal (15 minutos)", key="nuevo_codigo_agent"):
-      codigo = secrets.token_urlsafe(24)
-      hash_codigo = hashlib.sha256(codigo.encode("utf-8")).hexdigest()
-      vence = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
-      try:
-        api_remota(
-            "POST", "/rest/v1/codigos_agente",
-            json={"codigo_hash": hash_codigo, "vence_en": vence},
-            headers={"Prefer": "return=minimal"},
-        )
-      except requests.RequestException as exc:
-        st.error(f"No pude crear el código: {exc}")
-      else:
-        st.session_state["codigo_vinculacion_rfaf"] = codigo
-
-    if st.session_state.get("codigo_vinculacion_rfaf"):
-      st.code(st.session_state["codigo_vinculacion_rfaf"], language="text")
-      st.caption("Copia este código en PowerShell al ejecutar python agente_local.py. Solo se usa una vez.")
-
-    st.write("**Dispositivos autorizados**")
-    try:
-      agentes = obtener_agentes()
-      if not agentes:
-        st.info("Aún no hay ordenadores vinculados.")
-      for agente in agentes:
-        estado = "en línea" if esta_en_linea(agente) else "sin conexión"
-        a, b = st.columns([4, 1])
-        a.write(f"{agente['nombre']} · {estado} · `{agente['id'][:8]}`")
-        if b.button("Revocar", key=f"revocar_{agente['id']}"):
-          api_remota(
-              "PATCH", f"/rest/v1/agentes_scraper?id=eq.{agente['id']}",
-              json={"activo": False},
-          )
-          st.rerun()
-    except requests.RequestException as exc:
-      st.error(f"No se pudo leer la lista de agentes: {exc}")
 
 
 def panel_scraper():
   with st.expander("Actualizar datos desde el móvil (Windows)", expanded=True):
     if not configuracion_remota():
-      st.info("Configura SUPABASE_URL y la clave administrativa SOLO en Secrets de Streamlit.")
+      st.info(
+          "Para habilitar este panel configura los secretos de Supabase en"
+          " Streamlit."
+      )
       return
 
-    try:
-      agentes = obtener_agentes()
-    except requests.RequestException as exc:
-      st.error(f"No se pudo consultar los agentes: {exc}")
-      administrar_agentes()
-      return
-
-    en_linea = [a for a in agentes if esta_en_linea(a)]
-    if not en_linea:
-      st.warning("No hay ordenadores vinculados y en línea. Inicia agente_local.py en Windows.")
+    # --- BLOQUE DE DIAGNÓSTICO ADICIONAL ---
+    supabase_key = st.secrets.get("SUPABASE_SECRET_KEY") or st.secrets.get(
+        "SUPABASE_SERVICE_ROLE_KEY", ""
+    )
+    supabase_url = st.secrets.get("SUPABASE_URL", "")
+    if supabase_key:
+      st.success(
+          f"✅ Clave detectada correctamente (Longitud: {len(supabase_key)} caracteres)"
+      )
     else:
-      opciones = {f"{a['nombre']} ({a['id'][:8]})": a["id"] for a in en_linea}
-      elegido = st.selectbox("Ordenador que ejecutará el scraping", list(opciones), key="target_agent")
-      agente_id = opciones[elegido]
+      st.error(
+          "❌ No se detecta la variable SUPABASE_SECRET_KEY en st.secrets"
+      )
+
+    if st.button("Probar conexión GET con Supabase", key="probar_get_supa"):
       try:
-        trabajos = api_remota(
-            "GET", "/rest/v1/solicitudes_scraper"
-            f"?select=id,estado,creado_en,mensaje&agente_id=eq.{agente_id}"
-            "&estado=in.(pendiente,ejecutando)&limit=1",
-        ).json()
+        test_url = f"{supabase_url}/rest/v1/solicitudes_scraper?select=id"
+        response = requests.get(test_url, headers=supabase_headers(), timeout=10)
+        st.write(f"Código de estado HTTP: **{response.status_code}**")
+        st.json(response.json())
+      except Exception as e:
+        st.error(f"Error en la prueba de red: {e}")
+    # ---------------------------------------
+
+    if st.button("Ejecutar Scraper y Actualizar BD", key="solicitar_scraping"):
+      try:
+        api_remota(
+            "POST",
+            "/rest/v1/solicitudes_scraper",
+            json={
+                "estado": "pendiente",
+                "mensaje": "Solicitud manual desde Streamlit Cloud",
+            },
+            headers={"Prefer": "return=representation"},
+        )
+        st.success(
+            "Solicitud enviada. El ordenador debe tener activo agente_local.py"
+            " y el móvil conectado."
+        )
       except requests.RequestException as exc:
-        st.error(f"No se pudo comprobar el estado: {exc}")
-        trabajos = [{"estado": "desconocido"}]  # No se permite crear hasta comprobarlo.
+        st.error(f"No pude solicitar el scraping: {exc}")
 
-      if trabajos:
-        st.info(f"Ya hay un trabajo activo: {trabajos[0]['estado']}.")
-      if st.button(
-          "Ejecutar scraper y publicar CSV", key="solicitar_scraping",
-          disabled=bool(trabajos),
-      ):
-        try:
-          api_remota(
-              "POST", "/rest/v1/solicitudes_scraper",
-              json={
-                  "agente_id": agente_id,
-                  "estado": "pendiente",
-                  "mensaje": "Solicitado desde Streamlit Cloud",
-              },
-              headers={"Prefer": "return=representation"},
-          )
-          st.success("Solicitud registrada. El agente la recogerá automáticamente.")
-        except requests.RequestException as exc:
-          st.error(f"No pude crear la solicitud: {exc}")
-
-    if st.button("Consultar último estado", key="consultar_scraping"):
+    if st.button("Consultar estado", key="consultar_scraping"):
       try:
-        jobs = api_remota(
-            "GET", "/rest/v1/solicitudes_scraper"
-            "?select=id,estado,creado_en,iniciado_en,terminado_en,mensaje"
-            "&order=creado_en.desc&limit=1",
-        ).json()
+        r = api_remota(
+            "GET",
+            "/rest/v1/solicitudes_scraper?select=id,estado,creado_en,iniciado_en,terminado_en,mensaje&order=creado_en.desc&limit=1",
+        )
+        jobs = r.json()
         if jobs:
-          st.write(f"Estado: **{jobs[0]['estado']}**")
-          st.caption(jobs[0].get("mensaje") or "Sin detalles")
+          j = jobs[0]
+          st.write(f"Estado: **{j['estado']}**")
+          st.caption(j.get("mensaje") or "Sin detalles todavía")
         else:
-          st.info("No hay solicitudes recientes.")
+          st.info("Todavía no hay solicitudes.")
       except requests.RequestException as exc:
-        st.error(f"No se pudo consultar el estado: {exc}")
+        st.error(f"Error al consultar estado: {exc}")
 
-    st.caption("La app lee el último CSV publicado en Storage; no modifica la tabla SQL jugadores_rfaf.")
+    st.caption(
+        "Después de completarse, usa ‘Actualizar datos de pantalla’ para"
+        " cargar el CSV nuevo."
+    )
     if st.button("Actualizar datos de pantalla", key="refrescar_datos"):
       cargar_datos.clear()
       st.rerun()
-    administrar_agentes()
 
 
 SIN_SELECCION = "— Sin seleccionar —"
@@ -717,10 +635,7 @@ try:
   if archivo_subido is not None:
     df_original = cargar_datos(archivo_subido)
   else:
-    remoto = leer_csv_remoto()
-    if configuracion_remota() and remoto is None:
-      st.warning("No se pudo leer el CSV de Supabase; se muestra la copia local de GitHub.")
-    origen_csv = remoto if remoto is not None else CSV_PATH
+    origen_csv = leer_csv_remoto() or CSV_PATH
     df_original = cargar_datos(origen_csv)
 
 except FileNotFoundError:
