@@ -114,45 +114,102 @@ def normalizar_columnas_sql(df):
   return df.rename(columns=renombres)
 
 
-@st.fragment(run_every="3s")
+@st.fragment(run_every="8s")
 def panel_scraper():
-  """Un único botón y seguimiento automático desde Supabase."""
+  """Botón único, heartbeat del agente y consola de ejecución."""
+  import html
+  from datetime import datetime, timezone
+
   st.subheader("Actualización de jugadores")
   try:
-    respuesta = api_remota(
-        "GET", "/rest/v1/solicitudes_scraper",
+    trabajos = api_remota("GET", "/rest/v1/solicitudes_scraper",
         params={"select": "id,estado,mensaje,creado_en,terminado_en",
-                "order": "creado_en.desc", "limit": "1"},
-    )
-    trabajos = respuesta.json()
+                "order": "creado_en.desc", "limit": "1"}).json()
     trabajo = trabajos[0] if trabajos else None
     estado = (trabajo or {}).get("estado", "sin solicitudes")
-    ocupado = estado in ("pendiente", "ejecutando")
-    if st.button("🔄 Actualizar jugadores", type="primary", disabled=ocupado,
-                 key="solicitar_scraping"):
-      r = api_remota(
-          "POST", "/rest/v1/solicitudes_scraper",
-          json={"estado": "pendiente", "mensaje": "Esperando al agente local..."},
-          headers={"Prefer": "return=representation"},
-      )
-      st.success("Solicitud enviada al ordenador.")
-      st.rerun()
-    st.write(f"**Estado:** {estado}")
-    if trabajo:
-      mensaje = trabajo.get("mensaje") or "Esperando mensajes del scraper..."
-      st.code(mensaje, language=None)
-      if estado == "completado":
-        if st.session_state.get("rfaf_ultimo_completado") != trabajo["id"]:
-          st.session_state["rfaf_ultimo_completado"] = trabajo["id"]
-          leer_jugadores_supabase.clear()
-          st.rerun()
-      elif estado == "error":
-        st.error("El scraper informó un error. Revisa el texto anterior.")
-    else:
-      st.caption("Conecta el móvil por USB y deja agente_local.py funcionando.")
-  except requests.RequestException as exc:
-    st.error(f"Error al consultar el estado: {exc}")
+    raw = (trabajo or {}).get("mensaje") or ""
+    # Heartbeat dentro de 'mensaje': no exige añadir columnas a Supabase.
+    match = re.search(r"(?:^|\n)\[RFAF_HEARTBEAT:([^\]\n]+)\]", raw)
+    heartbeat = None
+    if match:
+      try:
+        heartbeat = datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
+      except ValueError:
+        pass
+    conectado = bool(heartbeat and
+        (datetime.now(timezone.utc) - heartbeat).total_seconds() < 20)
+    consola = re.sub(r"(?:^|\n)\[RFAF_HEARTBEAT:[^\]\n]+\]", "", raw).strip()
 
+    en_marcha = estado in ("pendiente", "ejecutando", "detener")
+    if not conectado:
+      st.warning("⚠️ Agente local desconectado. Puedes enviar la solicitud ahora e iniciar el agente después.")
+    if estado == "detener" and not conectado:
+      st.info("La última detención no fue confirmada. Antes de reanudar, comprueba que el scraper anterior no sigue ejecutándose.")
+
+    if estado == "pendiente":
+      etiqueta = "⏹ Cancelar solicitud pendiente"
+    elif estado == "ejecutando" and conectado:
+      etiqueta = "⏹ Detener actualización"
+    elif estado == "detener" and conectado:
+      etiqueta = "⏹ Deteniendo..."
+    elif estado in ("pausado", "detenido", "error", "completado", "ejecutando", "detener"):
+      etiqueta = "▶️ Reanudar actualización" if estado != "completado" else "▶️ Actualizar jugadores"
+    else:
+      etiqueta = "▶️ Actualizar jugadores"
+
+    # Aun sin agente conectado, la web puede registrar la solicitud.
+    # Si una ejecución quedó huérfana, exigir confirmación antes de reutilizarla.
+    huerfano = not conectado and estado in ("ejecutando", "detener")
+    autorizado = True
+    if huerfano:
+      autorizado = st.checkbox("He comprobado que el scraper anterior no sigue ejecutándose.",
+                               key="rfaf_confirmar_huerfano")
+    if st.button(etiqueta, key="rfaf_reproductor", type="primary",
+                 disabled=(estado == "detener" and conectado) or (huerfano and not autorizado)):
+      if estado == "pendiente" and trabajo:
+        api_remota("PATCH", "/rest/v1/solicitudes_scraper",
+            params={"id": f"eq.{trabajo['id']}", "estado": "eq.pendiente"},
+            json={"estado": "detenido", "mensaje": "⏹ Solicitud cancelada. Consola limpia.",
+                  "terminado_en": datetime.now(timezone.utc).isoformat()})
+      elif estado == "ejecutando" and conectado and trabajo:
+        api_remota("PATCH", "/rest/v1/solicitudes_scraper",
+            params={"id": f"eq.{trabajo['id']}", "estado": "eq.ejecutando"},
+            json={"estado": "detener"})
+      elif trabajo:
+        resultado = api_remota("PATCH", "/rest/v1/solicitudes_scraper",
+            params={"id": f"eq.{trabajo['id']}", "estado": f"eq.{estado}"},
+            json={"estado": "pendiente", "mensaje": "▶️ Solicitud pendiente. Consola limpia.",
+                  "terminado_en": None},
+            headers={"Prefer": "return=representation"}).json()
+        if not resultado:
+          st.warning("El estado cambió; vuelve a intentarlo.")
+      else:
+        api_remota("POST", "/rest/v1/solicitudes_scraper",
+            json={"estado": "pendiente", "mensaje": "▶️ Solicitud pendiente. Consola limpia."})
+      st.rerun(scope="fragment")
+
+    nombres = {"pendiente": "Preparando", "ejecutando": "Ejecutando",
+        "detener": "Deteniendo", "detenido": "Detenido", "pausado": "Pausado",
+        "completado": "Completado", "error": "Error", "sin solicitudes": "Sin iniciar"}
+    st.write(f"**Estado:** {nombres.get(estado, estado)}")
+    st.markdown(
+        '<div style="height:260px;overflow-y:auto;white-space:pre-wrap;'
+        'overflow-wrap:anywhere;background:#181a20;color:#e6e7eb;'
+        'border-radius:8px;padding:14px;font:12px/1.5 monospace">'
+        + html.escape(consola or "Consola vacía.") + '</div>', unsafe_allow_html=True)
+    if estado == "pausado":
+      st.info("⏸ Actualización pausada. Reconecta el móvil y pulsa Reanudar; se usará el último checkpoint guardado.")
+    elif estado == "detenido":
+      st.caption("Consola limpiada al detener. La próxima ejecución tendrá su propia consola.")
+    elif estado == "error":
+      st.error("El scraper informó un error. Consulta la consola.")
+    elif estado == "completado" and trabajo:
+      marca = (trabajo["id"], trabajo.get("terminado_en"))
+      if st.session_state.get("rfaf_ultimo_completado") != marca:
+        st.session_state["rfaf_ultimo_completado"] = marca
+        leer_jugadores_supabase.clear()
+  except (requests.RequestException, ValueError) as exc:
+    st.error(f"Error de comunicación con Supabase: {exc}")
 
 SIN_SELECCION = "— Sin seleccionar —"
 
@@ -624,7 +681,71 @@ except (requests.RequestException, ValueError) as exc:
   st.stop()
 
 if df_original.empty:
-  st.warning("La tabla jugadores_rfaf está vacía en Supabase.")
+  st.caption("Fuente de datos: Supabase · jugadores_rfaf · 0 filas")
+  st.info("Todavía no hay jugadores. Puedes iniciar la actualización aquí.")
+  panel_scraper()
+
+  @st.fragment(run_every="20s")
+  def vigilar_primera_carga():
+    """Detectar el primer registro para activar automáticamente los filtros reales."""
+    try:
+      respuesta = api_remota("GET", "/rest/v1/jugadores_rfaf",
+          params={"select": "id", "limit": "1"})
+      if respuesta.json():
+        leer_jugadores_supabase.clear()
+        st.rerun(scope="app")
+    except (requests.RequestException, ValueError):
+      pass
+
+  vigilar_primera_carga()
+
+  # Mostrar la misma estructura principal aunque todavía no haya filas.
+  # Los controles dependientes de jugadores permanecen deshabilitados.
+  st.subheader("Base de datos de jugadores")
+  st.caption("0 registros mostrados")
+  f1, f2, f3 = st.columns(3)
+  with f1:
+    st.selectbox("Año de nacimiento", ["Todos"], disabled=True, key="empty_anio")
+  with f2:
+    st.selectbox("Temporada", ["Todos"], disabled=True, key="empty_temporada_bd")
+  with f3:
+    st.selectbox("Categoría", ["Todos"], disabled=True, key="empty_categoria_bd")
+  f4, f5, f6 = st.columns(3)
+  with f4:
+    st.selectbox("Competición", ["Todos"], disabled=True, key="empty_competicion_bd")
+  with f5:
+    st.selectbox("Grupo", ["Todos"], disabled=True, key="empty_grupo_bd")
+  with f6:
+    st.selectbox("Equipo", ["Todos"], disabled=True, key="empty_equipo_bd")
+  st.text_input("Jugador", placeholder="Escribe nombre o apellido...", disabled=True,
+                key="empty_busqueda_jugador")
+  columnas_vacias = ["Jugador", "Año_nacimiento", "Temporada", "Categoria_origen",
+                     "Competicion_origen", "Grupo_origen", "Equipo_origen",
+                     "Club_en_temporada", "Estado", "Convocados", "Titular", "Suplente",
+                     "Jugados", "Total_Goles", "Media_Goles", "Amarillas", "Rojas",
+                     "Doble_Amarilla"]
+  st.dataframe(pd.DataFrame(columns=columnas_vacias), width="stretch",
+               height=430, hide_index=True)
+  st.download_button("📥 Descargar Excel (.xlsx)", data=b"", disabled=True,
+                     key="empty_descargar_excel")
+
+  st.divider()
+  st.subheader("Selección de equipo para la alineación")
+  a1, a2 = st.columns([1.2, 2])
+  with a1:
+    st.selectbox("📅 Temporada", ["Sin datos"], disabled=True, key="empty_temporada")
+  with a2:
+    st.selectbox("🏷️ Categoría", ["Sin datos"], disabled=True, key="empty_categoria")
+  a3, a4 = st.columns([2.2, 3.9])
+  with a3:
+    st.selectbox("🏆 Competición", ["Sin datos"], disabled=True, key="empty_liga")
+  with a4:
+    st.selectbox("🛡️ Equipo", ["Sin datos"], disabled=True, key="empty_equipo")
+  st.info("Los equipos, las formaciones y las plantillas estarán disponibles cuando se incorporen jugadores.")
+  with st.expander("📋 Plantilla completa (0 jugadores)"):
+    st.dataframe(pd.DataFrame(columns=["Jugador", "Año_nacimiento", "Estado",
+                "Convocados", "Jugados", "Total_Goles"]), hide_index=True,
+                width="stretch")
   st.stop()
 
 columnas_numericas = [
@@ -650,33 +771,6 @@ st.caption(f"Fuente de datos: Supabase · jugadores_rfaf · {len(df_original):,}
 panel_scraper()
 
 
-@st.fragment(run_every="5s")
-def vigilar_nuevos_jugadores():
-  """Actualiza toda la página cuando cambia el número de filas de Supabase.
-
-  El fragmento del scraper se refresca por separado, pero no actualiza
-  la tabla principal. Aquí detectamos nuevas filas sin depender de F5.
-  """
-  try:
-    respuesta = api_remota(
-        "GET", "/rest/v1/jugadores_rfaf",
-        params={"select": "id", "limit": "1"},
-        headers={"Prefer": "count=exact"},
-    )
-    rango = respuesta.headers.get("Content-Range", "")
-    if "/" not in rango or rango.rsplit("/", 1)[1] == "*":
-      return
-    total = int(rango.rsplit("/", 1)[1])
-    if total != len(df_original):
-      leer_jugadores_supabase.clear()
-      st.rerun(scope="app")
-  except (requests.RequestException, ValueError):
-    # Un fallo transitorio del contador no debe interrumpir el scraper.
-    pass
-
-
-vigilar_nuevos_jugadores()
-
 
 # ============================================================
 # PROCESAR DATOS
@@ -690,9 +784,6 @@ df_objetivos = df[df["Es_objetivo"].fillna(False)].copy()
 # ============================================================
 # EXPLORADOR DE TODA LA BASE DE DATOS
 # ============================================================
-
-st.subheader("Base de datos de jugadores")
-
 
 def opciones_texto(serie):
   """Devuelve valores de texto únicos, limpios y ordenados."""
@@ -711,161 +802,193 @@ def filtrar_por_texto(df_base, columna, valor):
   ].copy()
 
 
-anos_disponibles = sorted(
-    pd.to_numeric(df_original["Año_nacimiento"], errors="coerce")
-    .dropna()
-    .astype(int)
-    .unique()
-    .tolist()
-)
+@st.cache_data(ttl=10, show_spinner=False)
+def leer_jugadores_tabla_viva():
+  """Consulta jugadores sin invalidar ni recargar el resto de la pagina."""
+  registros = []
+  while True:
+    lote = api_remota("GET", "/rest/v1/jugadores_rfaf",
+        params={"select": "*", "limit": "1000", "offset": str(len(registros))}).json()
+    registros.extend(lote)
+    if len(lote) < 1000:
+      break
+  return normalizar_columnas_sql(pd.DataFrame(registros))
 
-col_anio, col_temporada_bd, col_categoria_bd = st.columns(3)
 
-with col_anio:
-  anio_bd = st.selectbox(
-      "Año de nacimiento", ["Todos"] + anos_disponibles, key="bd_anio"
+@st.fragment(run_every="20s")
+def panel_jugadores_vivo():
+  """Solo vuelve a dibujar la tabla y sus filtros, no toda la aplicacion."""
+  try:
+    df_original = leer_jugadores_tabla_viva()
+  except (requests.RequestException, ValueError) as exc:
+    st.warning(f"No se pudo actualizar la tabla: {exc}")
+    return
+  if df_original.empty:
+    st.subheader("Base de datos de jugadores")
+    st.info("Todavía no hay jugadores.")
+    return
+  if "Año_nacimiento" in df_original.columns:
+    df_original["Año_nacimiento"] = pd.to_numeric(df_original["Año_nacimiento"], errors="coerce")
+  st.subheader("Base de datos de jugadores")
+
+
+  anos_disponibles = sorted(
+      pd.to_numeric(df_original["Año_nacimiento"], errors="coerce")
+      .dropna()
+      .astype(int)
+      .unique()
+      .tolist()
   )
 
-df_explorador = df_original.copy()
+  col_anio, col_temporada_bd, col_categoria_bd = st.columns(3)
 
-if anio_bd != "Todos":
-  ano_numerico = pd.to_numeric(df_explorador["Año_nacimiento"], errors="coerce")
+  with col_anio:
+    anio_bd = st.selectbox(
+        "Año de nacimiento", ["Todos"] + anos_disponibles, key="bd_anio"
+    )
 
-  df_explorador = df_explorador[ano_numerico.eq(int(anio_bd))].copy()
+  df_explorador = df_original.copy()
 
+  if anio_bd != "Todos":
+    ano_numerico = pd.to_numeric(df_explorador["Año_nacimiento"], errors="coerce")
 
-with col_temporada_bd:
-  temporadas_bd = (
-      opciones_texto(df_explorador["Temporada"])
-      if "Temporada" in df_explorador.columns
-      else []
-  )
-
-  temporada_bd = st.selectbox(
-      "Temporada", ["Todos"] + temporadas_bd, key="bd_temporada"
-  )
+    df_explorador = df_explorador[ano_numerico.eq(int(anio_bd))].copy()
 
 
-df_explorador = filtrar_por_texto(df_explorador, "Temporada", temporada_bd)
+  with col_temporada_bd:
+    temporadas_bd = (
+        opciones_texto(df_explorador["Temporada"])
+        if "Temporada" in df_explorador.columns
+        else []
+    )
+
+    temporada_bd = st.selectbox(
+        "Temporada", ["Todos"] + temporadas_bd, key="bd_temporada"
+    )
 
 
-with col_categoria_bd:
-  categorias_bd = (
-      opciones_texto(df_explorador["Categoria_origen"])
-      if "Categoria_origen" in df_explorador.columns
-      else []
-  )
-
-  categoria_bd = st.selectbox(
-      "Categoría", ["Todos"] + categorias_bd, key="bd_categoria"
-  )
+  df_explorador = filtrar_por_texto(df_explorador, "Temporada", temporada_bd)
 
 
-df_explorador = filtrar_por_texto(
-    df_explorador, "Categoria_origen", categoria_bd
-)
+  with col_categoria_bd:
+    categorias_bd = (
+        opciones_texto(df_explorador["Categoria_origen"])
+        if "Categoria_origen" in df_explorador.columns
+        else []
+    )
+
+    categoria_bd = st.selectbox(
+        "Categoría", ["Todos"] + categorias_bd, key="bd_categoria"
+    )
 
 
-col_competicion_bd, col_grupo_bd, col_equipo_bd = st.columns(3)
-
-with col_competicion_bd:
-  competiciones_bd = (
-      opciones_texto(df_explorador["Competicion_origen"])
-      if "Competicion_origen" in df_explorador.columns
-      else []
-  )
-
-  competicion_bd = st.selectbox(
-      "Competición", ["Todos"] + competiciones_bd, key="bd_competicion"
+  df_explorador = filtrar_por_texto(
+      df_explorador, "Categoria_origen", categoria_bd
   )
 
 
-df_explorador = filtrar_por_texto(
-    df_explorador, "Competicion_origen", competicion_bd
-)
+  col_competicion_bd, col_grupo_bd, col_equipo_bd = st.columns(3)
+
+  with col_competicion_bd:
+    competiciones_bd = (
+        opciones_texto(df_explorador["Competicion_origen"])
+        if "Competicion_origen" in df_explorador.columns
+        else []
+    )
+
+    competicion_bd = st.selectbox(
+        "Competición", ["Todos"] + competiciones_bd, key="bd_competicion"
+    )
 
 
-with col_grupo_bd:
-  grupos_bd = (
-      opciones_texto(df_explorador["Grupo_origen"])
-      if "Grupo_origen" in df_explorador.columns
-      else []
+  df_explorador = filtrar_por_texto(
+      df_explorador, "Competicion_origen", competicion_bd
   )
 
-  grupo_bd = st.selectbox("Grupo", ["Todos"] + grupos_bd, key="bd_grupo")
+
+  with col_grupo_bd:
+    grupos_bd = (
+        opciones_texto(df_explorador["Grupo_origen"])
+        if "Grupo_origen" in df_explorador.columns
+        else []
+    )
+
+    grupo_bd = st.selectbox("Grupo", ["Todos"] + grupos_bd, key="bd_grupo")
 
 
-df_explorador = filtrar_por_texto(df_explorador, "Grupo_origen", grupo_bd)
+  df_explorador = filtrar_por_texto(df_explorador, "Grupo_origen", grupo_bd)
 
 
-with col_equipo_bd:
-  equipos_bd = (
-      opciones_texto(df_explorador["Equipo_origen"])
-      if "Equipo_origen" in df_explorador.columns
-      else []
+  with col_equipo_bd:
+    equipos_bd = (
+        opciones_texto(df_explorador["Equipo_origen"])
+        if "Equipo_origen" in df_explorador.columns
+        else []
+    )
+
+    equipo_bd = st.selectbox("Equipo", ["Todos"] + equipos_bd, key="bd_equipo")
+
+
+  df_explorador = filtrar_por_texto(df_explorador, "Equipo_origen", equipo_bd)
+
+
+  busqueda_jugador_bd = st.text_input(
+      "Jugador",
+      placeholder="Escribe nombre o apellido...",
+      key="bd_jugador_busqueda",
   )
 
-  equipo_bd = st.selectbox("Equipo", ["Todos"] + equipos_bd, key="bd_equipo")
+  if busqueda_jugador_bd.strip() and "Jugador" in df_explorador.columns:
+    df_explorador = df_explorador[
+        df_explorador["Jugador"]
+        .fillna("")
+        .astype(str)
+        .str.contains(
+            busqueda_jugador_bd.strip(), case=False, na=False, regex=False
+        )
+    ].copy()
 
 
-df_explorador = filtrar_por_texto(df_explorador, "Equipo_origen", equipo_bd)
+  columnas_bd = [
+      "Jugador",
+      "Año_nacimiento",
+      "Temporada",
+      "Categoria_origen",
+      "Competicion_origen",
+      "Grupo_origen",
+      "Equipo_origen",
+      "Club_en_temporada",
+      "Estado",
+      "Convocados",
+      "Titular",
+      "Suplente",
+      "Jugados",
+      "Total_Goles",
+      "Media_Goles",
+      "Amarillas",
+      "Rojas",
+      "Doble_Amarilla",
+  ]
 
+  columnas_bd = [
+      columna for columna in columnas_bd if columna in df_explorador.columns
+  ]
 
-busqueda_jugador_bd = st.text_input(
-    "Jugador",
-    placeholder="Escribe nombre o apellido...",
-    key="bd_jugador_busqueda",
-)
+  st.caption(f"{len(df_explorador):,} registros mostrados".replace(",", "."))
 
-if busqueda_jugador_bd.strip() and "Jugador" in df_explorador.columns:
-  df_explorador = df_explorador[
-      df_explorador["Jugador"]
-      .fillna("")
-      .astype(str)
-      .str.contains(
-          busqueda_jugador_bd.strip(), case=False, na=False, regex=False
-      )
-  ].copy()
+  tabla_bd = df_explorador[columnas_bd].copy()
 
+  st.dataframe(tabla_bd, width="stretch", height=430, hide_index=True)
 
-columnas_bd = [
-    "Jugador",
-    "Año_nacimiento",
-    "Temporada",
-    "Categoria_origen",
-    "Competicion_origen",
-    "Grupo_origen",
-    "Equipo_origen",
-    "Club_en_temporada",
-    "Estado",
-    "Convocados",
-    "Titular",
-    "Suplente",
-    "Jugados",
-    "Total_Goles",
-    "Media_Goles",
-    "Amarillas",
-    "Rojas",
-    "Doble_Amarilla",
-]
+  st.download_button(
+      "📥 Descargar Excel (.xlsx)",
+      data=dataframe_a_excel(tabla_bd, "Base de jugadores"),
+      file_name="base_jugadores.xlsx",
+      mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      key="guardar_bd_excel",
+  )
 
-columnas_bd = [
-    columna for columna in columnas_bd if columna in df_explorador.columns
-]
-
-st.caption(f"{len(df_explorador):,} registros mostrados".replace(",", "."))
-
-tabla_bd = df_explorador[columnas_bd].copy()
-
-st.dataframe(tabla_bd, width="stretch", height=430, hide_index=True)
-
-st.download_button(
-    "📥 Descargar Excel (.xlsx)",
-    data=dataframe_a_excel(tabla_bd, "Base de jugadores"),
-    file_name="base_jugadores.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    key="guardar_bd_excel",
-)
+panel_jugadores_vivo()
 
 # ============================================================
 # FILTROS PARA EL CAMPO DE FÚTBOL
