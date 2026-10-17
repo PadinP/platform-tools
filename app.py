@@ -33,8 +33,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# En la nube se consulta primero el CSV publicado por el agente local.
-CSV_PATH = "jugadores_rfaf.csv"
+# Los datos visibles se obtienen exclusivamente desde la tabla SQL.
+# Nunca se utilizan CSV locales ni archivos de Supabase Storage como respaldo.
 
 
 def configuracion_remota():
@@ -57,28 +57,61 @@ def supabase_headers(content_type="application/json"):
 
 def api_remota(metodo, ruta, **kwargs):
   base = st.secrets["SUPABASE_URL"].rstrip("/")
-  
-  # Fusionar cabeceras base con las opcionales de kwargs de forma limpia
+  # Evita /rest/v1/rest/v1 si el usuario guardó una API URL completa.
+  if base.endswith("/rest/v1"):
+    base = base[:-len("/rest/v1")]
   headers = supabase_headers()
   if "headers" in kwargs:
     headers.update(kwargs.pop("headers"))
-
   r = requests.request(
-      metodo, base + ruta, headers=headers, timeout=20, **kwargs
+      metodo, base + ruta, headers=headers, timeout=30, **kwargs
   )
   r.raise_for_status()
   return r
 
 
-def leer_csv_remoto():
-  if not configuracion_remota():
-    return None
-  # Objeto privado: solo se lee por el servidor de Streamlit, no desde navegador.
-  try:
-    r = api_remota("GET", "/storage/v1/object/futbolapp-data/jugadores_rfaf.csv")
-    return BytesIO(r.content)
-  except requests.RequestException:
-    return None
+@st.cache_data(ttl=15, show_spinner="Consultando jugadores en Supabase...")
+def leer_jugadores_supabase():
+  """Consulta todas las filas en lotes; falla explícitamente si Supabase falla."""
+  registros = []
+  tamano_lote = 1000
+  while True:
+    inicio = len(registros)
+    respuesta = api_remota(
+        "GET", "/rest/v1/jugadores_rfaf",
+        params={"select": "*", "limit": str(tamano_lote), "offset": str(inicio)},
+    )
+    lote = respuesta.json()
+    if not isinstance(lote, list):
+      raise ValueError("La respuesta de jugadores_rfaf no es una lista JSON")
+    registros.extend(lote)
+    if len(lote) < tamano_lote:
+      break
+  return pd.DataFrame(registros)
+
+
+def normalizar_columnas_sql(df):
+  """Adapta nombres SQL en minúsculas a los de la app, sin cambiar valores."""
+  import unicodedata
+  columnas_esperadas = [
+      "Temporada", "Categoria_origen", "Competicion_origen",
+      "Grupo_origen", "Equipo_origen", "Jugador", "Año_nacimiento",
+      "Club_en_temporada", "Estado", "Convocados", "Titular",
+      "Suplente", "Jugados", "Total_Goles", "Media_Goles",
+      "Amarillas", "Rojas", "Doble_Amarilla", "Competiciones_temporada",
+  ]
+  def clave(texto):
+    sin_acentos = "".join(
+        caracter for caracter in unicodedata.normalize("NFKD", texto)
+        if not unicodedata.combining(caracter)
+    )
+    return re.sub(r"[^a-z0-9]", "", sin_acentos.lower())
+  esperadas = {clave(nombre): nombre for nombre in columnas_esperadas}
+  renombres = {
+      actual: esperadas[clave(actual)]
+      for actual in df.columns if clave(actual) in esperadas
+  }
+  return df.rename(columns=renombres)
 
 
 def panel_scraper():
@@ -149,11 +182,10 @@ def panel_scraper():
         st.error(f"Error al consultar estado: {exc}")
 
     st.caption(
-        "Después de completarse, usa ‘Actualizar datos de pantalla’ para"
-        " cargar el CSV nuevo."
+        "Después de completarse, actualiza la pantalla para consultar la tabla SQL."
     )
     if st.button("Actualizar datos de pantalla", key="refrescar_datos"):
-      cargar_datos.clear()
+      leer_jugadores_supabase.clear()
       st.rerun()
 
 
@@ -210,39 +242,10 @@ OBJETIVOS = [
 
 
 # ============================================================
-# CARGAR CSV
+# Los jugadores se consultan exclusivamente desde Supabase SQL.
 # ============================================================
 
 
-@st.cache_data
-def cargar_datos(archivo):
-
-  if hasattr(archivo, "seek"):
-    archivo.seek(0)
-
-  df = pd.read_csv(archivo, encoding="utf-8-sig")
-
-  columnas_numericas = [
-      "Año_nacimiento",
-      "Convocados",
-      "Titular",
-      "Suplente",
-      "Jugados",
-      "Total_Goles",
-      "Media_Goles",
-      "Amarillas",
-      "Rojas",
-      "Doble_Amarilla",
-  ]
-
-  for columna in columnas_numericas:
-    if columna in df.columns:
-      df[columna] = pd.to_numeric(df[columna], errors="coerce")
-
-  return df
-
-
-# ============================================================
 # TEXTO SEGURO
 # ============================================================
 
@@ -626,27 +629,42 @@ def dataframe_a_excel(df_exportar, nombre_hoja="Datos"):
 
 
 # ============================================================
-# CARGAR ARCHIVO
+# CARGAR JUGADORES: SOLO TABLA SQL DE SUPABASE
 # ============================================================
 
-archivo_subido = st.session_state.get("archivo_csv", None)
-
-try:
-  if archivo_subido is not None:
-    df_original = cargar_datos(archivo_subido)
-  else:
-    origen_csv = leer_csv_remoto() or CSV_PATH
-    df_original = cargar_datos(origen_csv)
-
-except FileNotFoundError:
-  st.error(f"No se encontró el archivo {CSV_PATH}.")
-  st.info(
-      "Coloca jugadores_rfaf.csv en la misma carpeta que app.py o carga un CSV"
-      " aquí."
-  )
-  st.file_uploader("Selecciona un CSV", type=["csv"], key="archivo_csv")
+if not configuracion_remota():
+  st.error("Faltan las credenciales de Supabase en Secrets de Streamlit.")
   st.stop()
 
+try:
+  df_original = normalizar_columnas_sql(leer_jugadores_supabase())
+except (requests.RequestException, ValueError) as exc:
+  st.error(f"No se pudo leer la tabla jugadores_rfaf de Supabase: {exc}")
+  st.stop()
+
+if df_original.empty:
+  st.warning("La tabla jugadores_rfaf está vacía en Supabase.")
+  st.stop()
+
+columnas_numericas = [
+    "Año_nacimiento", "Convocados", "Titular", "Suplente", "Jugados",
+    "Total_Goles", "Media_Goles", "Amarillas", "Rojas", "Doble_Amarilla",
+]
+for columna in columnas_numericas:
+  if columna in df_original.columns:
+    df_original[columna] = pd.to_numeric(df_original[columna], errors="coerce")
+
+columnas_necesarias = ["Temporada", "Categoria_origen", "Competicion_origen",
+    "Grupo_origen", "Equipo_origen", "Jugador", "Año_nacimiento",
+    "Club_en_temporada", "Estado", "Convocados", "Titular", "Suplente",
+    "Jugados", "Total_Goles", "Media_Goles", "Amarillas", "Rojas",
+    "Doble_Amarilla", "Competiciones_temporada"]
+faltantes = [col for col in columnas_necesarias if col not in df_original.columns]
+if faltantes:
+  st.error("La tabla jugadores_rfaf no contiene estas columnas esperadas: " + ", ".join(faltantes))
+  st.stop()
+
+st.caption(f"Fuente de datos: Supabase · jugadores_rfaf · {len(df_original):,} filas")
 
 panel_scraper()
 
@@ -1295,15 +1313,3 @@ with st.expander(f"📋 Plantilla completa ({len(plantilla)} jugadores)"):
   )
 
 # ============================================================
-# CAMBIAR ARCHIVO CSV
-# ============================================================
-
-st.divider()
-
-with st.expander("📁 Cambiar archivo CSV", expanded=False):
-  st.caption(
-      "El archivo cargado sustituye temporalmente a jugadores_rfaf.csv mientras"
-      " la app esté abierta."
-  )
-
-  st.file_uploader("Selecciona otro CSV", type=["csv"], key="archivo_csv")
