@@ -1,4 +1,5 @@
-import csv
+import os
+import requests
 import json
 import re
 import subprocess
@@ -60,10 +61,28 @@ OBJETIVOS = [
     },
 ]
 
-CSV_OUT = BASE_DIR / "jugadores_rfaf.csv"
-CHECKPOINT_OUT = BASE_DIR / "checkpoint_rfaf.json"
-DEBUG_DIR = BASE_DIR / "debug_rfaf"
+# La persistencia se hace exclusivamente en Supabase SQL.
+# El agente entrega estas variables al proceso sin escribir archivos.
+SUPABASE_URL = os.environ.get("RFAF_SUPABASE_URL", "").rstrip("/").removesuffix("/rest/v1")
+SUPABASE_KEY = os.environ.get("RFAF_SUPABASE_KEY", "")
 TMP_XML_DEVICE = "/sdcard/rfaf_scraper.xml"
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise SystemExit("El agente no transmitió la conexión de Supabase al scraper.")
+HEADERS_SQL = {"apikey": SUPABASE_KEY, "Content-Type": "application/json"}
+if not SUPABASE_KEY.startswith(("sb_secret_", "sb_publishable_")):
+    HEADERS_SQL["Authorization"] = f"Bearer {SUPABASE_KEY}"
+
+
+def sql_request(method, route, **kwargs):
+    response = requests.request(
+        method, SUPABASE_URL + "/rest/v1/" + route,
+        headers={**HEADERS_SQL, **kwargs.pop("headers", {})},
+        timeout=45, **kwargs,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Supabase {response.status_code}: {response.text[:500]}")
+    return response
+
 
 # Esperas cortas. Los dumps de UIAutomator son mucho mas costosos que estos sleeps.
 DELAY_TAP = 0.12
@@ -94,8 +113,6 @@ COLUMNAS = [
 ]
 
 DEVICE = None
-CSV_FILE = None
-CSV_WRITER = None
 CSV_KEYS = set()
 CHECKPOINT = None
 JUGADORES_OK = set()
@@ -261,15 +278,8 @@ def ui_root():
 
 
 def save_debug(name, root=None):
-    try:
-        DEBUG_DIR.mkdir(exist_ok=True)
-        if root is None:
-            root = ui_root()
-        path = DEBUG_DIR / f"{name}_{int(time.time())}.xml"
-        ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
-        print(f"DEBUG XML: {path}")
-    except Exception:
-        pass
+    # Evita generar archivos locales de depuración en esta versión.
+    print(f"[DEBUG] {name} (sin crear archivos)", flush=True)
 
 
 def find_res(root, resource_id):
@@ -397,48 +407,78 @@ def csv_key(row):
     )
 
 
-def open_csv():
-    global CSV_FILE, CSV_WRITER, CSV_KEYS
-    exists = CSV_OUT.exists() and CSV_OUT.stat().st_size > 0
-    if exists:
-        with CSV_OUT.open("r", newline="", encoding="utf-8-sig") as f:
-            for row in csv.DictReader(f):
-                CSV_KEYS.add(csv_key(row))
+# Compatibilidad con el resto del scraper: se conservan los nombres
+# internos de funciones, pero ya NO se genera ni consulta un CSV.
+NOMBRES_SQL = {
+    "Temporada": "temporada", "Categoria_origen": "categoria_origen",
+    "Competicion_origen": "competicion_origen", "Grupo_origen": "grupo_origen",
+    "Equipo_origen": "equipo_origen", "Jugador": "jugador",
+    "Año_nacimiento": "año_nacimiento", "Club_en_temporada": "club_en_temporada",
+    "Estado": "estado", "Convocados": "convocados", "Titular": "titular",
+    "Suplente": "suplente", "Jugados": "jugados", "Total_Goles": "total_goles",
+    "Media_Goles": "media_goles", "Amarillas": "amarillas", "Rojas": "rojas",
+    "Doble_Amarilla": "doble_amarilla",
+    "Competiciones_temporada": "competiciones_temporada",
+}
+ENTEROS_SQL = {"año_nacimiento", "convocados", "titular", "suplente", "jugados",
+               "total_goles", "amarillas", "rojas", "doble_amarilla"}
 
-    CSV_FILE = CSV_OUT.open("a", newline="", encoding="utf-8-sig", buffering=1)
-    CSV_WRITER = csv.DictWriter(CSV_FILE, fieldnames=COLUMNAS, extrasaction="ignore")
-    if not exists:
-        CSV_WRITER.writeheader()
-        CSV_FILE.flush()
-    print(f"✓ CSV: {CSV_OUT.resolve()}")
-    print(f"✓ Filas existentes: {len(CSV_KEYS)}")
+
+def adaptar_fila(row):
+    obj = {}
+    for origen, destino in NOMBRES_SQL.items():
+        valor = row.get(origen)
+        if valor is not None and not isinstance(valor, (int, float)):
+            valor = str(valor).strip()
+        if destino in ENTEROS_SQL:
+            valor = int(float(str(valor).replace(',', '.'))) if valor not in (None, "") else None
+        elif destino == "media_goles":
+            valor = float(str(valor).replace(',', '.')) if valor not in (None, "") else None
+        else:
+            valor = "" if valor is None else str(valor)
+        obj[destino] = valor
+    return obj
+
+
+def open_csv():
+    print("✓ Jugadores: escritura directa en Supabase SQL, sin CSV local", flush=True)
 
 
 def append_csv(row):
     key = csv_key(row)
     if key in CSV_KEYS:
         return False
-    CSV_WRITER.writerow(row)
-    CSV_FILE.flush()
-    CSV_KEYS.add(key)
+    datos = adaptar_fila(row)
+    # Identidad lógica basada en la que ya utiliza el scraper para evitar duplicados.
+    columnas = ("temporada", "competicion_origen", "grupo_origen",
+                "equipo_origen", "jugador", "año_nacimiento")
+    params = {"select": "id", "limit": "1"}
+    for columna in columnas:
+        valor = datos[columna]
+        if valor is None:
+            params[columna] = "is.null"
+        else:
+            params[columna] = "eq." + str(valor)
+    existentes = sql_request("GET", "jugadores_rfaf", params=params).json()
+    if existentes:
+        # Los registros existentes también reciben las estadísticas actualizadas.
+        sql_request("PATCH", "jugadores_rfaf", params={"id": "eq." + str(existentes[0]["id"])}, json=datos)
+    else:
+        sql_request("POST", "jugadores_rfaf", json=datos)
+    CSV_KEYS.add(key)  # Solo después de una escritura confirmada por Supabase.
     return True
 
 
 def load_checkpoint():
-    if not CHECKPOINT_OUT.exists():
-        return {
-            "jugadores": [],
-            "equipos": [],
-            "partidos": [],
-            "grupos": [],
-            "anonymous_rows": {},
-        }
-    try:
-        data = json.loads(CHECKPOINT_OUT.read_text(encoding="utf-8"))
-    except Exception:
-        data = {}
-    for key in ("jugadores", "equipos", "partidos", "grupos"):
-        data.setdefault(key, [])
+    respuesta = sql_request("GET", "checkpoints_rfaf",
+        params={"select": "data", "id": "eq.principal", "limit": "1"}).json()
+    data = (respuesta[0].get("data") if respuesta else None) or {}
+    if isinstance(data, str):
+        data = json.loads(data)
+    if not isinstance(data, dict):
+        raise RuntimeError("Checkpoint SQL inválido; no se sobrescribirá")
+    for clave in ("jugadores", "equipos", "partidos", "grupos"):
+        data.setdefault(clave, [])
     data.setdefault("anonymous_rows", {})
     return data
 
@@ -451,10 +491,10 @@ def save_checkpoint():
     CHECKPOINT["partidos"] = sorted(PARTIDOS_OK)
     CHECKPOINT["grupos"] = sorted(GRUPOS_OK)
     CHECKPOINT["anonymous_rows"] = dict(ANON_ROW_MAP)
-
-    temp = CHECKPOINT_OUT.with_suffix(".tmp")
-    temp.write_text(json.dumps(CHECKPOINT, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp.replace(CHECKPOINT_OUT)
+    sql_request("POST", "checkpoints_rfaf",
+        params={"on_conflict": "id"},
+        headers={"Prefer": "resolution=merge-duplicates"},
+        json={"id": "principal", "data": CHECKPOINT})
 
 
 def count_completed_team_players(category, competition, group, team):
@@ -2094,16 +2134,12 @@ def main():
                 if not process_target(target, group):
                     raise RuntimeError("Objetivo incompleto; CSV y checkpoint conservados.")
     except KeyboardInterrupt:
-        print("\n⏹ Detenido manualmente. CSV y checkpoint guardados.")
+        print("\n⏹ Detenido manualmente. Avance conservado en Supabase.")
+        raise
     finally:
         save_checkpoint()
-        if CSV_FILE is not None:
-            CSV_FILE.flush()
-            CSV_FILE.close()
 
-    print("\n✓ PROCESO FINALIZADO")
-    print(f"CSV: {CSV_OUT.resolve()}")
-    print(f"Checkpoint: {CHECKPOINT_OUT.resolve()}")
+    print("\n✓ PROCESO FINALIZADO - Jugadores y checkpoint guardados en Supabase SQL")
 
 
 if __name__ == "__main__":

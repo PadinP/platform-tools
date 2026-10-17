@@ -114,57 +114,44 @@ def normalizar_columnas_sql(df):
   return df.rename(columns=renombres)
 
 
+@st.fragment(run_every="3s")
 def panel_scraper():
-  with st.expander("Actualizar datos desde el móvil (Windows)", expanded=True):
-    if not configuracion_remota():
-      st.info(
-          "Para habilitar este panel configura los secretos de Supabase en"
-          " Streamlit."
-      )
-      return
-
-    if st.button("Ejecutar Scraper y Actualizar BD", key="solicitar_scraping"):
-      try:
-        api_remota(
-            "POST",
-            "/rest/v1/solicitudes_scraper",
-            json={
-                "estado": "pendiente",
-                "mensaje": "Solicitud manual desde Streamlit Cloud",
-            },
-            headers={"Prefer": "return=representation"},
-        )
-        st.success(
-            "Solicitud enviada. El ordenador debe tener activo agente_local.py"
-            " y el móvil conectado."
-        )
-      except requests.RequestException as exc:
-        st.error(f"No pude solicitar el scraping: {exc}")
-
-    if st.button("Consultar estado", key="consultar_scraping"):
-      try:
-        r = api_remota(
-            "GET",
-            "/rest/v1/solicitudes_scraper?select=id,estado,creado_en,iniciado_en,terminado_en,mensaje&order=creado_en.desc&limit=1",
-        )
-        jobs = r.json()
-        if jobs:
-          j = jobs[0]
-          st.write(f"Estado: **{j['estado']}**")
-          st.caption(j.get("mensaje") or "Sin detalles todavía")
-        else:
-          st.info("Todavía no hay solicitudes.")
-      except requests.RequestException as exc:
-        st.error(f"Error al consultar estado: {exc}")
-
-    st.caption(
-        "Los jugadores se muestran desde la tabla SQL jugadores_rfaf. "
-        "Una solicitud completada no garantiza por sí sola que el agente haya "
-        "sincronizado esa tabla."
+  """Un único botón y seguimiento automático desde Supabase."""
+  st.subheader("Actualización de jugadores")
+  try:
+    respuesta = api_remota(
+        "GET", "/rest/v1/solicitudes_scraper",
+        params={"select": "id,estado,mensaje,creado_en,terminado_en",
+                "order": "creado_en.desc", "limit": "1"},
     )
-    if st.button("Actualizar datos de pantalla", key="refrescar_datos"):
-      leer_jugadores_supabase.clear()
+    trabajos = respuesta.json()
+    trabajo = trabajos[0] if trabajos else None
+    estado = (trabajo or {}).get("estado", "sin solicitudes")
+    ocupado = estado in ("pendiente", "ejecutando")
+    if st.button("🔄 Actualizar jugadores", type="primary", disabled=ocupado,
+                 key="solicitar_scraping"):
+      r = api_remota(
+          "POST", "/rest/v1/solicitudes_scraper",
+          json={"estado": "pendiente", "mensaje": "Esperando al agente local..."},
+          headers={"Prefer": "return=representation"},
+      )
+      st.success("Solicitud enviada al ordenador.")
       st.rerun()
+    st.write(f"**Estado:** {estado}")
+    if trabajo:
+      mensaje = trabajo.get("mensaje") or "Esperando mensajes del scraper..."
+      st.code(mensaje, language=None)
+      if estado == "completado":
+        if st.session_state.get("rfaf_ultimo_completado") != trabajo["id"]:
+          st.session_state["rfaf_ultimo_completado"] = trabajo["id"]
+          leer_jugadores_supabase.clear()
+          st.rerun()
+      elif estado == "error":
+        st.error("El scraper informó un error. Revisa el texto anterior.")
+    else:
+      st.caption("Conecta el móvil por USB y deja agente_local.py funcionando.")
+  except requests.RequestException as exc:
+    st.error(f"Error al consultar el estado: {exc}")
 
 
 SIN_SELECCION = "— Sin seleccionar —"
@@ -661,6 +648,34 @@ if faltantes:
 st.caption(f"Fuente de datos: Supabase · jugadores_rfaf · {len(df_original):,} filas")
 
 panel_scraper()
+
+
+@st.fragment(run_every="5s")
+def vigilar_nuevos_jugadores():
+  """Actualiza toda la página cuando cambia el número de filas de Supabase.
+
+  El fragmento del scraper se refresca por separado, pero no actualiza
+  la tabla principal. Aquí detectamos nuevas filas sin depender de F5.
+  """
+  try:
+    respuesta = api_remota(
+        "GET", "/rest/v1/jugadores_rfaf",
+        params={"select": "id", "limit": "1"},
+        headers={"Prefer": "count=exact"},
+    )
+    rango = respuesta.headers.get("Content-Range", "")
+    if "/" not in rango or rango.rsplit("/", 1)[1] == "*":
+      return
+    total = int(rango.rsplit("/", 1)[1])
+    if total != len(df_original):
+      leer_jugadores_supabase.clear()
+      st.rerun(scope="app")
+  except (requests.RequestException, ValueError):
+    # Un fallo transitorio del contador no debe interrumpir el scraper.
+    pass
+
+
+vigilar_nuevos_jugadores()
 
 
 # ============================================================

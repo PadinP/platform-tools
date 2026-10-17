@@ -1,153 +1,122 @@
-"""Puente entre Supabase y el scraper Android ejecutado en Windows.
+"""Puente RFAF: utiliza los Secrets locales de Streamlit, sin .env.
 
-Arrancar en la raíz del proyecto: python agente_local.py
-Requiere .env con SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY.
+Uso: python agente_local.py (mantener abierto en el PC conectado al móvil).
+Esta autenticación aprovecha la configuración local solo para pruebas en TU PC.
+No distribuir este archivo con Secrets a clientes. Para otros PC, autorización limitada.
 """
-import os
+from __future__ import annotations
+
 import subprocess
 import sys
 import time
-from datetime import datetime
+import tomllib
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
-from dotenv import load_dotenv
 
 BASE = Path(__file__).resolve().parent
-load_dotenv(BASE / ".env")
-URL = os.getenv("SUPABASE_URL", "").rstrip("/")
-KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-POLL_SECONDS = 10
+CONFIG = BASE / ".streamlit" / "secrets.toml"
+SCRAPER = BASE / "scraper" / "scrapp_v13.py"
+POLL = 5
 
-if not URL or not KEY:
-  raise SystemExit("Faltan SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY en .env")
-
-HEADERS = {
-    "apikey": KEY,
-    "Authorization": f"Bearer {KEY}",
-    "Content-Type": "application/json",
-}
-
-
-def api(method, endpoint, **kwargs):
-  # Fusionar cabeceras base con las opcionales que vengan en kwargs de forma limpia
-  headers = dict(HEADERS)
-  if "headers" in kwargs:
-    headers.update(kwargs.pop("headers"))
-
-  response = requests.request(
-      method, URL + endpoint, headers=headers, timeout=30, **kwargs
-  )
-  response.raise_for_status()
-  return response
+if not CONFIG.exists():
+    raise SystemExit("Primero configura .streamlit/secrets.toml (el que ya usa Streamlit local).")
+config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+URL = str(config.get("SUPABASE_URL", "")).rstrip("/").removesuffix("/rest/v1")
+KEY = str(config.get("SUPABASE_SECRET_KEY") or config.get("SUPABASE_SERVICE_ROLE_KEY") or "")
+if not URL.startswith("https://") or not KEY:
+    raise SystemExit("Secrets locales incompletos: SUPABASE_URL y SUPABASE_SECRET_KEY")
+HEADERS = {"apikey": KEY, "Content-Type": "application/json"}
+if not KEY.startswith(("sb_secret_", "sb_publishable_")):
+    HEADERS["Authorization"] = f"Bearer {KEY}"
 
 
-def update_job(job_id, status, message):
-  api(
-      "PATCH",
-      f"/rest/v1/solicitudes_scraper?id=eq.{job_id}",
-      json={
-          "estado": status,
-          "mensaje": message[:1200],
-          **(
-              {"iniciado_en": datetime.now().astimezone().isoformat()}
-              if status == "ejecutando"
-              else {}
-          ),
-          **(
-              {"terminado_en": datetime.now().astimezone().isoformat()}
-              if status in ("completado", "error")
-              else {}
-          ),
-      },
-  )
+def api(method, route, **kwargs):
+    headers = dict(HEADERS)
+    headers.update(kwargs.pop("headers", {}))
+    resp = requests.request(method, URL + route, headers=headers, timeout=90, **kwargs)
+    if not resp.ok:
+        raise RuntimeError(f"Supabase HTTP {resp.status_code}: {resp.text[:600]}")
+    return resp
 
 
-def publish_csv():
-  path = BASE / "jugadores_rfaf.csv"
-  if not path.is_file() or path.stat().st_size == 0:
-    raise RuntimeError("El scraper no produjo jugadores_rfaf.csv con contenido.")
-  headers = dict(HEADERS)
-  headers.update({"Content-Type": "text/csv; charset=utf-8", "x-upsert": "true"})
-  r = requests.put(
-      URL + "/storage/v1/object/futbolapp-data/jugadores_rfaf.csv",
-      data=path.read_bytes(),
-      headers=headers,
-      timeout=120,
-  )
-  r.raise_for_status()
-  return path.stat().st_size
+def update(job_id, state, lines, finished=False):
+    data = {"estado": state, "mensaje": "\n".join(lines)[-1100:]}
+    if finished:
+        data["terminado_en"] = datetime.now(timezone.utc).isoformat()
+    api("PATCH", "/rest/v1/solicitudes_scraper",
+        params={"id": f"eq.{job_id}"}, json=data)
 
 
-def process_job(job):
-  job_id = job["id"]
-  # Reserva condicional: evita que varios agentes ejecuten el mismo trabajo.
-  r = api(
-      "PATCH",
-      f"/rest/v1/solicitudes_scraper?id=eq.{job_id}&estado=eq.pendiente",
-      headers={"Prefer": "return=representation"},
-      json={
-          "estado": "ejecutando",
-          "mensaje": "Iniciando scraper en Windows",
-          "iniciado_en": datetime.now().astimezone().isoformat(),
-      },
-  )
-  if not r.json():
-    return
 
-  try:
-    scraper = BASE / "scraper" / "scrapp_v13.py"
-    if not scraper.exists():
-      raise FileNotFoundError(f"No existe {scraper}")
-    log_path = BASE / "scraper_ultimo.log"
-    print(f"[{job_id}] Ejecutando el scraper. Log: {log_path}", flush=True)
-    with log_path.open("w", encoding="utf-8") as log:
-      completed = subprocess.run(
-          [sys.executable, "-u", str(scraper)],
-          cwd=BASE,
-          stdout=log,
-          stderr=subprocess.STDOUT,
-          check=False,
-      )
-    if completed.returncode != 0:
-      tail = log_path.read_text(encoding="utf-8", errors="replace")[-900:]
-      raise RuntimeError(
-          f"Scraper terminó con código {completed.returncode}. {tail}"
-      )
-    size = publish_csv()
-    update_job(
-        job_id, "completado", f"CSV actualizado en Supabase: {size:,} bytes"
-    )
-    print("Scraping finalizado y CSV publicado.", flush=True)
-  except Exception as exc:
-    print(f"Error en solicitud {job_id}: {exc}", flush=True)
+def procesar(job):
+    job_id = job["id"]
+    claimed = api("PATCH", "/rest/v1/solicitudes_scraper",
+        params={"id": f"eq.{job_id}", "estado": "eq.pendiente"},
+        headers={"Prefer": "return=representation"},
+        json={"estado": "ejecutando", "iniciado_en": datetime.now(timezone.utc).isoformat(),
+              "mensaje": "Iniciando scraper v13..."}).json()
+    if not claimed:
+        return
+    history = deque(maxlen=12)
+    last_sent = 0.0
+    def show(line, force=False):
+        nonlocal last_sent
+        line = line.strip()
+        if line:
+            print(line, flush=True)
+            history.append(line)
+        if force or time.monotonic() - last_sent >= 2:
+            update(job_id, "ejecutando", history)
+            last_sent = time.monotonic()
     try:
-      update_job(job_id, "error", str(exc))
-    except Exception as update_exc:
-      print(
-          f"No se pudo comunicar el error a Supabase: {update_exc}", flush=True
-      )
+        if not SCRAPER.exists():
+            raise RuntimeError(f"No se encuentra {SCRAPER}")
+        import os
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8:replace"
+        env["RFAF_SUPABASE_URL"] = URL
+        env["RFAF_SUPABASE_KEY"] = KEY
+        proc = subprocess.Popen([sys.executable, "-u", str(SCRAPER)],
+                                cwd=BASE, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True,
+                                encoding="utf-8", errors="replace", bufsize=1, env=env)
+        for line in proc.stdout:
+            show(line)
+        code = proc.wait()
+        if code != 0:
+            raise RuntimeError(f"Scraper terminó con código {code}.")
+        history.append("Scraper finalizado. Jugadores y checkpoint ya guardados en SQL.")
+        update(job_id, "completado", history, finished=True)
+        print("Sincronización en Supabase confirmada.", flush=True)
+    except Exception as exc:
+        history.append(f"ERROR: {exc}")
+        print(f"ERROR: {exc}", flush=True)
+        try:
+            update(job_id, "error", history, finished=True)
+        except Exception as failure:
+            print(f"No se pudo marcar error: {failure}", flush=True)
 
 
 def main():
-  print("Agente local FutbolApp: esperando solicitudes. Ctrl+C para terminar.")
-  while True:
-    try:
-      jobs = api(
-          "GET",
-          "/rest/v1/solicitudes_scraper?select=id,estado&estado=eq.pendiente&order=creado_en.asc&limit=1",
-      ).json()
-      if jobs:
-        process_job(jobs[0])
-      else:
-        time.sleep(POLL_SECONDS)
-    except requests.RequestException as exc:
-      print(f"Problema de conexión con Supabase: {exc}", flush=True)
-      time.sleep(15)
-
+    print("Agente RFAF activo. Conecta Android por USB y deja abierta FutbolAragon.", flush=True)
+    while True:
+        try:
+            jobs = api("GET", "/rest/v1/solicitudes_scraper",
+                params={"select": "id,estado", "estado": "eq.pendiente",
+                        "order": "creado_en.asc", "limit": "1"}).json()
+            if jobs:
+                procesar(jobs[0])
+            else:
+                time.sleep(POLL)
+        except Exception as exc:
+            print(f"Comunicación: {exc}", flush=True)
+            time.sleep(10)
 
 if __name__ == "__main__":
-  try:
-    main()
-  except KeyboardInterrupt:
-    print("\nAgente detenido.")
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("Agente detenido.")
