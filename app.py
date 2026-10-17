@@ -48,11 +48,11 @@ def supabase_headers(content_type="application/json"):
   key = st.secrets.get("SUPABASE_SECRET_KEY") or st.secrets.get(
       "SUPABASE_SERVICE_ROLE_KEY"
   )
-  return {
-      "apikey": key,
-      "Authorization": f"Bearer {key}",
-      "Content-Type": content_type,
-  }
+  # Las nuevas claves sb_secret_ no son JWT. No se deben enviar como Bearer.
+  headers = {"apikey": key, "Content-Type": content_type}
+  if not key.startswith(("sb_secret_", "sb_publishable_")):
+    headers["Authorization"] = f"Bearer {key}"
+  return headers
 
 
 def api_remota(metodo, ruta, **kwargs):
@@ -123,30 +123,6 @@ def panel_scraper():
       )
       return
 
-    # --- BLOQUE DE DIAGNÓSTICO ADICIONAL ---
-    supabase_key = st.secrets.get("SUPABASE_SECRET_KEY") or st.secrets.get(
-        "SUPABASE_SERVICE_ROLE_KEY", ""
-    )
-    supabase_url = st.secrets.get("SUPABASE_URL", "")
-    if supabase_key:
-      st.success(
-          f"✅ Clave detectada correctamente (Longitud: {len(supabase_key)} caracteres)"
-      )
-    else:
-      st.error(
-          "❌ No se detecta la variable SUPABASE_SECRET_KEY en st.secrets"
-      )
-
-    if st.button("Probar conexión GET con Supabase", key="probar_get_supa"):
-      try:
-        test_url = f"{supabase_url}/rest/v1/solicitudes_scraper?select=id"
-        response = requests.get(test_url, headers=supabase_headers(), timeout=10)
-        st.write(f"Código de estado HTTP: **{response.status_code}**")
-        st.json(response.json())
-      except Exception as e:
-        st.error(f"Error en la prueba de red: {e}")
-    # ---------------------------------------
-
     if st.button("Ejecutar Scraper y Actualizar BD", key="solicitar_scraping"):
       try:
         api_remota(
@@ -182,7 +158,9 @@ def panel_scraper():
         st.error(f"Error al consultar estado: {exc}")
 
     st.caption(
-        "Después de completarse, actualiza la pantalla para consultar la tabla SQL."
+        "Los jugadores se muestran desde la tabla SQL jugadores_rfaf. "
+        "Una solicitud completada no garantiza por sí sola que el agente haya "
+        "sincronizado esa tabla."
     )
     if st.button("Actualizar datos de pantalla", key="refrescar_datos"):
       leer_jugadores_supabase.clear()
@@ -639,7 +617,23 @@ if not configuracion_remota():
 try:
   df_original = normalizar_columnas_sql(leer_jugadores_supabase())
 except (requests.RequestException, ValueError) as exc:
-  st.error(f"No se pudo leer la tabla jugadores_rfaf de Supabase: {exc}")
+  st.error("No se pudo leer la tabla jugadores_rfaf de Supabase.")
+  response = getattr(exc, "response", None)
+  if response is not None:
+    st.write(f"**HTTP:** {response.status_code}")
+    try:
+      contenido = response.json()
+      if isinstance(contenido, dict):
+        # Solo mostramos los campos de diagnóstico, nunca credenciales.
+        campos = ("code", "message", "hint", "details")
+        st.json({k: contenido[k] for k in campos if k in contenido})
+      else:
+        st.warning("Supabase no devolvió un objeto de error JSON.")
+    except ValueError:
+      st.warning("Supabase devolvió una respuesta no JSON.")
+  else:
+    st.warning(f"Error local: {type(exc).__name__}")
+  st.info("Revisa el error anterior. No se usará ningún CSV como respaldo.")
   st.stop()
 
 if df_original.empty:
