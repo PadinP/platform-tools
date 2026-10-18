@@ -775,12 +775,14 @@ panel_jugadores_vivo()
 st.divider()
 
 @st.fragment(run_every="5s")
-def panel_alineaciones_vivo(zona_filtros, zona_campo):
+def panel_alineaciones_vivo():
   """Alineaciones disponibles incluso si la web comenzó con 0 jugadores.
 
   Se actualiza sin reiniciar el componente WebADB ni toda la página.
   Los widgets mantienen sus claves y elecciones entre refrescos.
   """
+  zona_filtros = st.container()
+  zona_campo = st.container()
   try:
     df_original = leer_jugadores_tabla_viva().copy()
   except Exception:
@@ -1259,9 +1261,7 @@ def panel_alineaciones_vivo(zona_filtros, zona_campo):
 
     # ============================================================
 
-# El cuerpo principal del fragmento vive en la barra lateral. Las dos zonas
-# vacías reciben los filtros y el campo sin acumular elementos tras cada rerun.
-zona_filtros_alineacion = st.empty()
-zona_campo_alineacion = st.empty()
-with st.sidebar:
-  panel_alineaciones_vivo(zona_filtros_alineacion, zona_campo_alineacion)
+# El fragmento y sus contenedores viven en la zona principal de Streamlit.
+# No insertar contenidos externos desde un fragmento de la barra lateral:
+# produce StreamlitInvalidLayoutContextError y oculta el campo.
+panel_alineaciones_vivo()

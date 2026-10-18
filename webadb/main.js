@@ -314,7 +314,21 @@ async function startScraping(){status('Conectando Android…');const manager=Adb
 // Streamlit v1 component protocol. Cada escritura espera confirmación del servidor antes de avanzar.
 window.addEventListener('message',event=>{if(event.source!==window.parent)return;const msg=event.data;if(msg?.type!=='streamlit:render')return;args=msg.args||{};const ack=args.ack;if(pendingAck&&ack?.session===clientSession&&ack?.id===pendingAck.id){const pending=pendingAck;pendingAck=null;clearTimeout(pending.timer);if(ack.ok)pending.resolve();else pending.reject(new Error(ack.error||'Error al guardar en Supabase'));setTimeout(()=>{void flushDiagnostics()},0)}});
 window.parent.postMessage({isStreamlitMessage:true,type:'streamlit:componentReady',apiVersion:1},'*');
-window.parent.postMessage({isStreamlitMessage:true,type:'streamlit:setFrameHeight',height:525},'*');
+// Ajustar la altura del iframe sin reiniciar el scraper ni recargar la página.
+function resizeWebadbFrame(){
+  const card=document.querySelector('.card');
+  if(!card)return;
+  const height=Math.max(340, Math.ceil(card.getBoundingClientRect().bottom)+12);
+  window.parent.postMessage({isStreamlitMessage:true,type:'streamlit:setFrameHeight',height},'*');
+}
+const activityPanel=$('activity-details');
+activityPanel?.addEventListener('toggle',()=>{
+  const hint=activityPanel.querySelector('.log-hint');
+  if(hint)hint.textContent=activityPanel.open?'Ocultar mensajes':'Ver mensajes';
+  resizeWebadbFrame();
+});
+if(typeof ResizeObserver!=='undefined')new ResizeObserver(resizeWebadbFrame).observe(document.querySelector('.card'));
+resizeWebadbFrame();
 async function executeScraper(automatic=false){
   if(running)return;
   running=true;
