@@ -114,102 +114,11 @@ def normalizar_columnas_sql(df):
   return df.rename(columns=renombres)
 
 
-@st.fragment(run_every="8s")
 def panel_scraper():
-  """Botón único, heartbeat del agente y consola de ejecución."""
-  import html
-  from datetime import datetime, timezone
+  """El agente y el scraper se ejecutan en el navegador mediante WebADB."""
+  from webadb_bridge import render_webadb
+  render_webadb(api_remota)
 
-  st.subheader("Actualización de jugadores")
-  try:
-    trabajos = api_remota("GET", "/rest/v1/solicitudes_scraper",
-        params={"select": "id,estado,mensaje,creado_en,terminado_en",
-                "order": "creado_en.desc", "limit": "1"}).json()
-    trabajo = trabajos[0] if trabajos else None
-    estado = (trabajo or {}).get("estado", "sin solicitudes")
-    raw = (trabajo or {}).get("mensaje") or ""
-    # Heartbeat dentro de 'mensaje': no exige añadir columnas a Supabase.
-    match = re.search(r"(?:^|\n)\[RFAF_HEARTBEAT:([^\]\n]+)\]", raw)
-    heartbeat = None
-    if match:
-      try:
-        heartbeat = datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
-      except ValueError:
-        pass
-    conectado = bool(heartbeat and
-        (datetime.now(timezone.utc) - heartbeat).total_seconds() < 20)
-    consola = re.sub(r"(?:^|\n)\[RFAF_HEARTBEAT:[^\]\n]+\]", "", raw).strip()
-
-    en_marcha = estado in ("pendiente", "ejecutando", "detener")
-    if not conectado:
-      st.warning("⚠️ Agente local desconectado. Puedes enviar la solicitud ahora e iniciar el agente después.")
-    if estado == "detener" and not conectado:
-      st.info("La última detención no fue confirmada. Antes de reanudar, comprueba que el scraper anterior no sigue ejecutándose.")
-
-    if estado == "pendiente":
-      etiqueta = "⏹ Cancelar solicitud pendiente"
-    elif estado == "ejecutando" and conectado:
-      etiqueta = "⏹ Detener actualización"
-    elif estado == "detener" and conectado:
-      etiqueta = "⏹ Deteniendo..."
-    elif estado in ("pausado", "detenido", "error", "completado", "ejecutando", "detener"):
-      etiqueta = "▶️ Reanudar actualización" if estado != "completado" else "▶️ Actualizar jugadores"
-    else:
-      etiqueta = "▶️ Actualizar jugadores"
-
-    # Aun sin agente conectado, la web puede registrar la solicitud.
-    # Si una ejecución quedó huérfana, exigir confirmación antes de reutilizarla.
-    huerfano = not conectado and estado in ("ejecutando", "detener")
-    autorizado = True
-    if huerfano:
-      autorizado = st.checkbox("He comprobado que el scraper anterior no sigue ejecutándose.",
-                               key="rfaf_confirmar_huerfano")
-    if st.button(etiqueta, key="rfaf_reproductor", type="primary",
-                 disabled=(estado == "detener" and conectado) or (huerfano and not autorizado)):
-      if estado == "pendiente" and trabajo:
-        api_remota("PATCH", "/rest/v1/solicitudes_scraper",
-            params={"id": f"eq.{trabajo['id']}", "estado": "eq.pendiente"},
-            json={"estado": "detenido", "mensaje": "⏹ Solicitud cancelada. Consola limpia.",
-                  "terminado_en": datetime.now(timezone.utc).isoformat()})
-      elif estado == "ejecutando" and conectado and trabajo:
-        api_remota("PATCH", "/rest/v1/solicitudes_scraper",
-            params={"id": f"eq.{trabajo['id']}", "estado": "eq.ejecutando"},
-            json={"estado": "detener"})
-      elif trabajo:
-        resultado = api_remota("PATCH", "/rest/v1/solicitudes_scraper",
-            params={"id": f"eq.{trabajo['id']}", "estado": f"eq.{estado}"},
-            json={"estado": "pendiente", "mensaje": "▶️ Solicitud pendiente. Consola limpia.",
-                  "terminado_en": None},
-            headers={"Prefer": "return=representation"}).json()
-        if not resultado:
-          st.warning("El estado cambió; vuelve a intentarlo.")
-      else:
-        api_remota("POST", "/rest/v1/solicitudes_scraper",
-            json={"estado": "pendiente", "mensaje": "▶️ Solicitud pendiente. Consola limpia."})
-      st.rerun(scope="fragment")
-
-    nombres = {"pendiente": "Preparando", "ejecutando": "Ejecutando",
-        "detener": "Deteniendo", "detenido": "Detenido", "pausado": "Pausado",
-        "completado": "Completado", "error": "Error", "sin solicitudes": "Sin iniciar"}
-    st.write(f"**Estado:** {nombres.get(estado, estado)}")
-    st.markdown(
-        '<div style="height:260px;overflow-y:auto;white-space:pre-wrap;'
-        'overflow-wrap:anywhere;background:#181a20;color:#e6e7eb;'
-        'border-radius:8px;padding:14px;font:12px/1.5 monospace">'
-        + html.escape(consola or "Consola vacía.") + '</div>', unsafe_allow_html=True)
-    if estado == "pausado":
-      st.info("⏸ Actualización pausada. Reconecta el móvil y pulsa Reanudar; se usará el último checkpoint guardado.")
-    elif estado == "detenido":
-      st.caption("Consola limpiada al detener. La próxima ejecución tendrá su propia consola.")
-    elif estado == "error":
-      st.error("El scraper informó un error. Consulta la consola.")
-    elif estado == "completado" and trabajo:
-      marca = (trabajo["id"], trabajo.get("terminado_en"))
-      if st.session_state.get("rfaf_ultimo_completado") != marca:
-        st.session_state["rfaf_ultimo_completado"] = marca
-        leer_jugadores_supabase.clear()
-  except (requests.RequestException, ValueError) as exc:
-    st.error(f"Error de comunicación con Supabase: {exc}")
 
 SIN_SELECCION = "— Sin seleccionar —"
 
@@ -681,24 +590,8 @@ except (requests.RequestException, ValueError) as exc:
   st.stop()
 
 if df_original.empty:
-  st.caption("Fuente de datos: Supabase · jugadores_rfaf · 0 filas")
   st.info("Todavía no hay jugadores. Puedes iniciar la actualización aquí.")
   panel_scraper()
-
-  @st.fragment(run_every="20s")
-  def vigilar_primera_carga():
-    """Detectar el primer registro para activar automáticamente los filtros reales."""
-    try:
-      respuesta = api_remota("GET", "/rest/v1/jugadores_rfaf",
-          params={"select": "id", "limit": "1"})
-      if respuesta.json():
-        leer_jugadores_supabase.clear()
-        st.rerun(scope="app")
-    except (requests.RequestException, ValueError):
-      pass
-
-  vigilar_primera_carga()
-
   # Mostrar la misma estructura principal aunque todavía no haya filas.
   # Los controles dependientes de jugadores permanecen deshabilitados.
   st.subheader("Base de datos de jugadores")
@@ -766,7 +659,6 @@ if faltantes:
   st.error("La tabla jugadores_rfaf no contiene estas columnas esperadas: " + ", ".join(faltantes))
   st.stop()
 
-st.caption(f"Fuente de datos: Supabase · jugadores_rfaf · {len(df_original):,} filas")
 
 panel_scraper()
 

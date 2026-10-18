@@ -1,24 +1,53 @@
-# Python
+
+# =====================================
+# SECRETOS Y CREDENCIALES
+# =====================================
+.streamlit/secrets.toml
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# =====================================
+# PYTHON
+# =====================================
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
 .venv/
 venv/
+env/
 
-# Archivos de prueba y depuración
-*.xml
-debug_rfaf/
+# =====================================
+# PYINSTALLER Y EJECUTABLES
+# =====================================
+build/
+dist/
+*.spec
+*.exe
+*.pkg
+*.toc
+*.pyz
+*.zip
 
-# Credenciales
-.env
-.streamlit/secrets.toml
-
-# Editor y sistema
-.vscode/
-.idea/
-Thumbs.db
-.DS_Store
-
-# Archivos temporales
+# =====================================
+# ARCHIVOS TEMPORALES Y LOGS
+# =====================================
+*.log
 *.tmp
 *.bak
-*.log
+.DS_Store
+Thumbs.db
+
+# =====================================
+# DATOS LOCALES Y CHECKPOINTS
+# =====================================
+checkpoint*.json
+jugadores*.csv
+
+# =====================================
+# CONFIGURACIÓN LOCAL
+# =====================================
+.vscode/
+.idea/

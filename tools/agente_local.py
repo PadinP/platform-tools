@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import queue
+import runpy
 import subprocess
 import sys
 import threading
@@ -20,7 +21,8 @@ from pathlib import Path
 import requests
 
 # Permite ejecutar desde la raíz o desde tools/.
-HERE = Path(__file__).resolve().parent
+HERE = (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
+        else Path(__file__).resolve().parent)
 BASE = HERE.parent if HERE.name.lower() == "tools" else HERE
 CONFIG = BASE / ".streamlit" / "secrets.toml"
 SCRAPER = BASE / "scraper" / "scrapp_v13.py"
@@ -150,7 +152,10 @@ def process_job(job):
                     "RFAF_SUPABASE_URL": URL,
                     "RFAF_SUPABASE_KEY": KEY})
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-        proc = subprocess.Popen([sys.executable, "-u", str(SCRAPER)], cwd=BASE,
+        command = ([sys.executable, "--run-scraper"]
+                   if getattr(sys, "frozen", False)
+                   else [sys.executable, "-u", str(SCRAPER)])
+        proc = subprocess.Popen(command, cwd=BASE,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, encoding="utf-8", errors="replace",
                                 bufsize=1, env=env, creationflags=flags)
@@ -299,6 +304,13 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--run-scraper":
+        # Modo interno del .exe: ejecutar el scraper externo usando el Python empaquetado.
+        if not SCRAPER.is_file():
+            raise SystemExit(f"No se encuentra el scraper: {SCRAPER}")
+        sys.argv = [str(SCRAPER)]
+        runpy.run_path(str(SCRAPER), run_name="__main__")
+        sys.exit(0)
     try:
         main()
     except KeyboardInterrupt:
