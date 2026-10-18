@@ -32,7 +32,7 @@ let checkpoint={jugadores:[],equipos:[],partidos:[],grupos:[],anonymous_rows:{}}
 let players=new Set(),teams=new Set(),matches=new Set(),groups=new Set(),anonymous={};
 let progress={players:0,teams:0,matches:0};
 const showProgress=(field,value)=>{const e=$(field);if(e)e.textContent=String(value)};
-function showTeamCount(done,total){showProgress('progress-squad',`${done} / ${total}`);const bar=$('progress-bar');if(bar)bar.value=total?Math.round(100*done/total):0}
+function showTeamCount(done,total){showProgress('progress-squad',`${done} / ${total}`);const pct=total?Math.min(100,Math.max(0,Math.round(100*done/total))):0;const fill=$('progress-fill');if(fill)fill.style.width=`${pct}%`;showProgress('progress-percent',`${pct}%`);const bar=$('progress-bar');if(bar)bar.setAttribute('aria-valuenow',String(pct))}
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const norm=v=>String(v??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]/g,'');
 const clean=v=>String(v??'').replace(/[\uE000-\uF8FF]/g,'').replace(/\s+/g,' ').trim();
@@ -51,15 +51,20 @@ const textMatch=(node,wanted)=>norm(txt(node))===norm(wanted)||norm(desc(node))=
 const contained=(root,id,wanted)=>{const parent=first(root,id);if(!parent)return null;const item=descendants(parent).find(n=>textMatch(n,wanted));return item?clickable(item):null};
 function status(s){
   const el=$('status');
-  el.textContent=s;
-  const overlay=$('usb-overlay');if(overlay)overlay.hidden=!/desconectado|reconexión pendiente|reconectado · pulsa/i.test(s);
-  const v=s.toLocaleLowerCase('es');
-  el.className = /desconectado|reconexión|reconectado|pausado|pendiente/.test(v) ? 'state-paused'
-    : /error|no disponible/.test(v) ? 'state-error'
-    : /finalizada|completada|conectado|correcto/.test(v) ? 'state-success'
-    : /actualizando|iniciando|conectando|deteniendo|→/.test(v) ? 'state-active'
-    : 'state-idle';
+  const v=String(s).toLocaleLowerCase('es');
+  const overlay=$('usb-overlay');if(overlay)overlay.hidden=!/desconectado|reconexión pendiente|autorización usb requerida/i.test(s);
+  const permissionButton=$('usb-authorize');if(permissionButton)permissionButton.hidden=!/autorización usb requerida/i.test(s);
+  const cls=/desconectado|reconexión|reconectado|pausad|pendiente|pausando/.test(v)?'state-paused'
+    : /error|no disponible/.test(v)?'state-error'
+    : /finalizada|completada/.test(v)?'state-success'
+    : /cancelado/.test(v)?'state-idle':'state-active';
+  const label=cls==='state-active'?'Ejecutando':cls==='state-error'?'Error':cls==='state-success'?'Finalizado'
+    : cls==='state-paused'?(/desconectado/.test(v)?'Móvil desconectado':/reconexión|reconectado/.test(v)?'Reconectando':'En pausa'):'Preparado';
+  el.textContent=label;
+  el.className=`pill ${cls}`;
+  el.title=String(s);
 }
+
 const technicalHistory=[];
 const HIDDEN_LOG=/^(?:Conexión ADB:|Checkpoint:|Persistencia Supabase|ATENCIÓN:|INICIANDO |Competición:|Jornada \d+|Partido:|PARTIDO:|La app indica|Revisión plantilla|USB reconectado|↻ Móvil reconectado|⚠ Móvil desconectado o comunicación|Se conserva el último checkpoint|Jornadas visibles:|Orden de selección enviada)/i;
 function log(s){
@@ -309,7 +314,7 @@ async function startScraping(){status('Conectando Android…');const manager=Adb
 // Streamlit v1 component protocol. Cada escritura espera confirmación del servidor antes de avanzar.
 window.addEventListener('message',event=>{if(event.source!==window.parent)return;const msg=event.data;if(msg?.type!=='streamlit:render')return;args=msg.args||{};const ack=args.ack;if(pendingAck&&ack?.session===clientSession&&ack?.id===pendingAck.id){const pending=pendingAck;pendingAck=null;clearTimeout(pending.timer);if(ack.ok)pending.resolve();else pending.reject(new Error(ack.error||'Error al guardar en Supabase'));setTimeout(()=>{void flushDiagnostics()},0)}});
 window.parent.postMessage({isStreamlitMessage:true,type:'streamlit:componentReady',apiVersion:1},'*');
-window.parent.postMessage({isStreamlitMessage:true,type:'streamlit:setFrameHeight',height:328},'*');
+window.parent.postMessage({isStreamlitMessage:true,type:'streamlit:setFrameHeight',height:525},'*');
 async function executeScraper(automatic=false){
   if(running)return;
   running=true;
@@ -362,10 +367,14 @@ async function scheduleReconnect(){
     const manager=AdbDaemonWebUsbDeviceManager.BROWSER;
     const devices=manager?await manager.getDevices():[];
     if(devices.length===1){
+      status('Reconectando móvil…');
       await executeScraper(true);
     }else{
-      status('Móvil reconectado · pulsa Actualizar jugadores');
-      log('Autoriza el móvil desde el botón para reanudar.');
+      // Chrome no ofrece permisos USB nuevos sin interacción del usuario.
+      // Mostrar el botón SOLO cuando se detectó un dispositivo reconectado
+      // pero no hay uno previamente autorizado.
+      status('Autorización USB requerida');
+      $('device').textContent='Conecta el móvil por USB, abre RFAF y autoriza el acceso USB.';
     }
   }catch(err){
     status('Reconexión pendiente');
@@ -395,4 +404,4 @@ if(!window.isSecureContext||!navigator.usb||!AdbDaemonWebUsbDeviceManager.BROWSE
   executeScraper(false);
 });
 
-$('usb-retry')?.addEventListener('click',()=>{if(!running){resumeOnUsbReconnect=true;executeScraper(false)}});
+$('usb-authorize')?.addEventListener('click',()=>{if(!running){resumeOnUsbReconnect=true;pausedByUser=false;void executeScraper(false)}});

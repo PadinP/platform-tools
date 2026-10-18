@@ -1,14 +1,22 @@
 <!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
-:root{font-family:system-ui,Segoe UI,sans-serif;color-scheme:dark;color:#eee}*{box-sizing:border-box}body{margin:0;padding:2px;background:transparent}
-button{background:#ff4b4b;border:0;border-radius:8px;color:white;font-weight:650;padding:11px 16px;cursor:pointer}button:disabled{opacity:.5}.status{margin:10px 0;font-size:14px}.detail{color:#bdc5d1;font-size:13px;margin:6px 0}pre{margin:10px 0 0;padding:12px;border:1px solid #38404a;border-radius:8px;background:#151920;color:#e5e7eb;font-size:12px;line-height:1.5;white-space:pre-wrap;overflow:auto;height:220px;overflow-wrap:anywhere}
-#status{font-weight:700;padding:3px 8px;border-radius:6px;display:inline-block}
-#status.state-error{color:#ff6b6b;background:rgba(255,75,75,.13)}
-#status.state-paused{color:#ffd166;background:rgba(255,193,7,.14)}
-#status.state-success{color:#65d6a6;background:rgba(0,200,120,.12)}
-#status.state-active{color:#7dc4ff;background:rgba(60,153,255,.13)}
-#status.state-idle{color:#c7cbd3}
-#usb-overlay[hidden]{display:none}#usb-overlay{position:fixed;inset:0;background:rgba(12,17,25,.94);z-index:30;display:flex;align-items:center;justify-content:center;padding:14px}#usb-card{background:#202632;border:1px solid #d7a74d;border-radius:16px;max-width:620px;width:100%;padding:22px;text-align:center;box-shadow:0 15px 40px #0009}#usb-card h2{color:#ffd166;margin:8px 0}#usb-card p{line-height:1.5;color:#e8e8e8}
+:root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color-scheme:dark;color:#eef1f5}*{box-sizing:border-box}body{margin:0;padding:3px;background:transparent}
+.card{border:1px solid #30363f;border-radius:17px;padding:19px;background:#0e1014;display:flex;flex-direction:column;gap:16px}
+.head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}h2{font-size:20px;line-height:1.25;margin:0;font-weight:730}
+.pill{padding:6px 12px;border-radius:999px;background:#30343b;font-weight:750;font-size:13px;white-space:nowrap;color:#e6e6e6}
+.pill.state-active{background:#063d25;color:#35d48b}.pill.state-error{background:#4f181c;color:#ff8585}.pill.state-paused{background:#513d13;color:#ffd476}.pill.state-success{background:#123c32;color:#6ae4b4}.pill.state-idle{background:#2d3541;color:#cad3df}
+.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 26px}.stat-label{color:#c6c8ce;font-size:14px;margin-bottom:5px}.stat-value{font-size:20px;font-weight:650;line-height:1.25;overflow-wrap:anywhere;min-height:25px}.stat-value.large{font-size:26px;font-variant-numeric:tabular-nums}
+.progress-head{display:flex;align-items:center;justify-content:space-between;gap:12px;font-weight:650;font-size:14px;margin-bottom:8px}.track{height:13px;background:#30343b;border-radius:99px;overflow:hidden}#progress-fill{height:100%;background:#16a34a;width:0%;border-radius:99px;transition:width .3s ease}
+button{background:#ff4b4b;border:0;border-radius:9px;color:white;font-weight:650;padding:12px 17px;cursor:pointer;min-height:42px}button:disabled{opacity:.5}#action{align-self:flex-start}
+#device{color:#b9c0c9;font-size:12px}.log-title{font-weight:680;font-size:14px}pre{margin:0;padding:14px;border:1px solid #38404a;border-radius:9px;background:#151920;color:#e5e7eb;font-size:12px;line-height:1.55;white-space:pre-wrap;overflow:auto;height:154px;overflow-wrap:anywhere}
+#usb-overlay[hidden],#usb-authorize[hidden]{display:none}#usb-overlay{position:fixed;inset:0;background:rgba(12,17,25,.95);z-index:30;display:flex;align-items:center;justify-content:center;padding:14px}#usb-card{background:#202632;border:1px solid #d7a74d;border-radius:16px;max-width:620px;width:100%;padding:24px;text-align:center;box-shadow:0 15px 40px #0009}#usb-card h2{color:#ffd166;margin:8px 0}#usb-card p{line-height:1.5;color:#e8e8e8}
+@media(max-width:520px){.card{padding:15px}.stats{gap:15px}.stat-value{font-size:17px}.stat-value.large{font-size:23px}h2{font-size:18px}}
 </style></head><body>
-<button id="action">▶ Actualizar jugadores</button><div class="status"><strong>Estado:</strong> <span id="status">Preparado</span></div><div class="detail" style="display:flex;flex-wrap:wrap;gap:12px;margin:8px 0"><span>Competición: <b id="progress-competition">—</b></span><span>Jornada: <b id="progress-day">—</b></span><span>Equipo: <b id="progress-team">—</b></span><span>Plantilla: <b id="progress-squad">—</b></span></div><progress id="progress-bar" max="100" value="0" style="width:100%;height:7px"></progress><div class="detail" id="device">Conecta el móvil por USB y abre la app RFAF.</div><pre id="log">Consola preparada.</pre>
-<div id="usb-overlay" hidden role="alertdialog" aria-label="Móvil desconectado"><section id="usb-card"><div style="font-size:38px">🔌</div><h2>Móvil desconectado</h2><p>Actualización pausada. Conecta el móvil por USB y abre la app RFAF.</p><p>Los jugadores guardados se conservan.</p><button id="usb-retry">Reconectar móvil</button></section></div>
+<section class="card" aria-label="Actualización de jugadores">
+<div class="head"><h2>Actualización de jugadores</h2><span id="status" class="pill state-idle" role="status">Preparado</span></div>
+<div class="stats"><div><div class="stat-label">Competición</div><div class="stat-value" id="progress-competition">—</div></div><div><div class="stat-label">Jornada actual</div><div class="stat-value large" id="progress-day">—</div></div><div><div class="stat-label">Equipo actual</div><div class="stat-value" id="progress-team">—</div></div><div><div class="stat-label">Jugadores procesados</div><div class="stat-value large" id="progress-squad">0 / 0</div></div></div>
+<div><div class="progress-head"><span>Progreso de la plantilla</span><span id="progress-percent">0%</span></div><div class="track" role="progressbar" aria-label="Progreso de la plantilla" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progress-bar"><div id="progress-fill"></div></div></div>
+<button id="action">▶ Actualizar jugadores</button><div id="device">Conecta el móvil por USB y abre la app RFAF.</div>
+<div class="log-title">Actividad reciente</div><pre id="log">Consola preparada.</pre>
+</section>
+<div id="usb-overlay" hidden role="alertdialog" aria-label="Móvil desconectado"><section id="usb-card"><div style="font-size:38px">🔌</div><h2>Móvil desconectado</h2><p>Actualización pausada. Conecta el móvil por USB y abre la app RFAF.</p><p>Los jugadores guardados se conservan.</p><p id="usb-waiting">Esperando a que conectes el móvil…</p><button id="usb-authorize" hidden>Autorizar acceso USB</button></section></div>
 <script type="module" src="./main.js"></script></body></html>

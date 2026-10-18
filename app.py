@@ -559,112 +559,14 @@ def dataframe_a_excel(df_exportar, nombre_hoja="Datos"):
   return buffer.getvalue()
 
 
-# ============================================================
-# CARGAR JUGADORES: SOLO TABLA SQL DE SUPABASE
-# ============================================================
-
+# Panel WebADB estable: no se reinicia cuando se actualizan datos.
 if not configuracion_remota():
   st.error("Faltan las credenciales de Supabase en Secrets de Streamlit.")
   st.stop()
 
-try:
-  df_original = normalizar_columnas_sql(leer_jugadores_supabase())
-except (requests.RequestException, ValueError) as exc:
-  st.error("No se pudo leer la tabla jugadores_rfaf de Supabase.")
-  response = getattr(exc, "response", None)
-  if response is not None:
-    st.write(f"**HTTP:** {response.status_code}")
-    try:
-      contenido = response.json()
-      if isinstance(contenido, dict):
-        # Solo mostramos los campos de diagnóstico, nunca credenciales.
-        campos = ("code", "message", "hint", "details")
-        st.json({k: contenido[k] for k in campos if k in contenido})
-      else:
-        st.warning("Supabase no devolvió un objeto de error JSON.")
-    except ValueError:
-      st.warning("Supabase devolvió una respuesta no JSON.")
-  else:
-    st.warning(f"Error local: {type(exc).__name__}")
-  st.info("Revisa el error anterior. No se usará ningún CSV como respaldo.")
-  st.stop()
-
-if df_original.empty:
-  st.info("Todavía no hay jugadores. Puedes iniciar la actualización aquí.")
-  panel_scraper()
-  # Mostrar la misma estructura principal aunque todavía no haya filas.
-  # Los controles dependientes de jugadores permanecen deshabilitados.
-  @st.fragment(run_every="5s")
-  def mostrar_jugadores_iniciales():
-    st.subheader("Base de datos de jugadores")
-    try:
-      registros = normalizar_columnas_sql(leer_jugadores_supabase())
-    except Exception:
-      st.warning("No se pudo consultar Supabase. Reintentando…")
-      return
-    st.caption(f"{len(registros)} registros mostrados")
-    if registros.empty:
-      st.info("Los jugadores aparecerán aquí en cuanto se guarden.")
-    else:
-      st.dataframe(registros, width="stretch", hide_index=True, height=430)
-      st.caption("Para habilitar los selectores de alineación al comenzar desde cero, todavía hay que recargar la página. Esta limitación se resolverá al trasladar la alineación a un fragmento independiente.")
-  mostrar_jugadores_iniciales()
-
-  st.divider()
-  st.subheader("Selección de equipo para la alineación")
-  a1, a2 = st.columns([1.2, 2])
-  with a1:
-    st.selectbox("📅 Temporada", ["Sin datos"], disabled=True, key="empty_temporada")
-  with a2:
-    st.selectbox("🏷️ Categoría", ["Sin datos"], disabled=True, key="empty_categoria")
-  a3, a4 = st.columns([2.2, 3.9])
-  with a3:
-    st.selectbox("🏆 Competición", ["Sin datos"], disabled=True, key="empty_liga")
-  with a4:
-    st.selectbox("🛡️ Equipo", ["Sin datos"], disabled=True, key="empty_equipo")
-  st.info("Los equipos, las formaciones y las plantillas estarán disponibles cuando se incorporen jugadores.")
-  with st.expander("📋 Plantilla completa (0 jugadores)"):
-    st.dataframe(pd.DataFrame(columns=["Jugador", "Año_nacimiento", "Estado",
-                "Convocados", "Jugados", "Total_Goles"]), hide_index=True,
-                width="stretch")
-  st.stop()
-
-columnas_numericas = [
-    "Año_nacimiento", "Convocados", "Titular", "Suplente", "Jugados",
-    "Total_Goles", "Media_Goles", "Amarillas", "Rojas", "Doble_Amarilla",
-]
-for columna in columnas_numericas:
-  if columna in df_original.columns:
-    df_original[columna] = pd.to_numeric(df_original[columna], errors="coerce")
-
-columnas_necesarias = ["Temporada", "Categoria_origen", "Competicion_origen",
-    "Grupo_origen", "Equipo_origen", "Jugador", "Año_nacimiento",
-    "Club_en_temporada", "Estado", "Convocados", "Titular", "Suplente",
-    "Jugados", "Total_Goles", "Media_Goles", "Amarillas", "Rojas",
-    "Doble_Amarilla", "Competiciones_temporada"]
-faltantes = [col for col in columnas_necesarias if col not in df_original.columns]
-if faltantes:
-  st.error("La tabla jugadores_rfaf no contiene estas columnas esperadas: " + ", ".join(faltantes))
-  st.stop()
-
-
 panel_scraper()
 
-
-
-# ============================================================
-# PROCESAR DATOS
-# ============================================================
-
-df = separar_competiciones(df_original)
-
-df_objetivos = df[df["Es_objetivo"].fillna(False)].copy()
-
-
-# ============================================================
-# EXPLORADOR DE TODA LA BASE DE DATOS
-# ============================================================
-
+# Explorador actualizado independientemente del scraper.
 def opciones_texto(serie):
   """Devuelve valores de texto únicos, limpios y ordenados."""
 
@@ -870,458 +772,496 @@ def panel_jugadores_vivo():
 
 panel_jugadores_vivo()
 
-# ============================================================
-# FILTROS PARA EL CAMPO DE FÚTBOL
-# ============================================================
-
 st.divider()
 
-st.subheader("Selección de equipo para la alineación")
+@st.fragment(run_every="5s")
+def panel_alineaciones_vivo(zona_filtros, zona_campo):
+  """Alineaciones disponibles incluso si la web comenzó con 0 jugadores.
 
-if df_objetivos.empty:
-  st.warning("El archivo no contiene competiciones incluidas en OBJETIVOS.")
-  st.stop()
+  Se actualiza sin reiniciar el componente WebADB ni toda la página.
+  Los widgets mantienen sus claves y elecciones entre refrescos.
+  """
+  try:
+    df_original = leer_jugadores_tabla_viva().copy()
+  except Exception:
+    with zona_filtros.container():
+      st.warning("No se pudo actualizar la selección de equipos. Reintentando…")
+    return
+  with zona_filtros.container():
+    if df_original.empty:
+      st.subheader("Selección de equipo para la alineación")
+      st.info("Los equipos y jugadores aparecerán aquí automáticamente en cuanto se guarden.")
+      return
+    for columna in ("Año_nacimiento", "Convocados", "Titular", "Suplente", "Jugados",
+                    "Total_Goles", "Media_Goles", "Amarillas", "Rojas", "Doble_Amarilla"):
+      if columna in df_original.columns:
+        df_original[columna] = pd.to_numeric(df_original[columna], errors="coerce")
+    necesarias = ("Temporada", "Categoria_origen", "Competicion_origen", "Grupo_origen",
+                  "Equipo_origen", "Jugador", "Año_nacimiento", "Club_en_temporada",
+                  "Estado", "Convocados", "Titular", "Suplente", "Jugados", "Total_Goles",
+                  "Media_Goles", "Amarillas", "Rojas", "Doble_Amarilla", "Competiciones_temporada")
+    faltantes = [c for c in necesarias if c not in df_original.columns]
+    if faltantes:
+      st.error("Faltan columnas de jugadores: " + ", ".join(faltantes))
+      return
+    df = separar_competiciones(df_original)
+    df_objetivos = df[df["Es_objetivo"].fillna(False)].copy()
+    st.subheader("Selección de equipo para la alineación")
 
-
-# ============================================================
-# TEMPORADA
-# ============================================================
-
-temporadas = sorted(
-    df_objetivos["Temporada"].dropna().astype(str).unique(), reverse=True
-)
-
-col_temporada, col_categoria = st.columns([1.2, 2])
-
-with col_temporada:
-  temporada = st.selectbox("📅 Temporada", temporadas)
-
-
-df_temporada = df_objetivos[
-    df_objetivos["Temporada"].astype(str).eq(temporada)
-].copy()
-
-
-# ============================================================
-# CATEGORÍA
-# ============================================================
-
-orden_categorias = []
-
-for objetivo in OBJETIVOS:
-  categoria_objetivo = objetivo["categoria"]
-
-  if categoria_objetivo not in orden_categorias:
-    orden_categorias.append(categoria_objetivo)
-
-categorias_presentes = {
-    texto_seguro(valor)
-    for valor in df_temporada["Categoria_filtro"].dropna().unique()
-    if texto_seguro(valor)
-}
-
-categorias = [
-    categoria_objetivo
-    for categoria_objetivo in orden_categorias
-    if categoria_objetivo in categorias_presentes
-]
+    if df_objetivos.empty:
+      st.warning("El archivo no contiene competiciones incluidas en OBJETIVOS.")
+      return
 
 
-with col_categoria:
-  categoria = st.selectbox("🏷️ Categoría", categorias)
+    # ============================================================
+    # TEMPORADA
+    # ============================================================
+
+    temporadas = sorted(
+        df_objetivos["Temporada"].dropna().astype(str).unique(), reverse=True
+    )
+
+    col_temporada, col_categoria = st.columns([1.2, 2])
+
+    with col_temporada:
+      temporada = st.selectbox("📅 Temporada", temporadas)
 
 
-df_categoria = df_temporada[df_temporada["Categoria_filtro"].eq(categoria)].copy()
+    df_temporada = df_objetivos[
+        df_objetivos["Temporada"].astype(str).eq(temporada)
+    ].copy()
 
 
-# ============================================================
-# COMPETICIÓN
-# ============================================================
+    # ============================================================
+    # CATEGORÍA
+    # ============================================================
 
-ligas_reales = [
-    liga
-    for liga in df_categoria["Liga_filtro"].dropna().astype(str).unique()
-    if liga.strip() and liga.lower() != "nan"
-]
+    orden_categorias = []
 
+    for objetivo in OBJETIVOS:
+      categoria_objetivo = objetivo["categoria"]
 
-ligas = []
+      if categoria_objetivo not in orden_categorias:
+        orden_categorias.append(categoria_objetivo)
 
-for objetivo in OBJETIVOS:
-  if objetivo["categoria"] != categoria:
-    continue
+    categorias_presentes = {
+        texto_seguro(valor)
+        for valor in df_temporada["Categoria_filtro"].dropna().unique()
+        if texto_seguro(valor)
+    }
 
-  for alias in objetivo["competicion"]:
-    coincidencias = [
-        liga_real
-        for liga_real in ligas_reales
-        if normalizar_texto(liga_real) == normalizar_texto(alias)
+    categorias = [
+        categoria_objetivo
+        for categoria_objetivo in orden_categorias
+        if categoria_objetivo in categorias_presentes
     ]
 
-    for coincidencia in coincidencias:
-      if coincidencia not in ligas:
-        ligas.append(coincidencia)
+
+    with col_categoria:
+      categoria = st.selectbox("🏷️ Categoría", categorias)
 
 
-if not ligas:
-  st.warning(
-      "No hay competiciones disponibles para esta categoría en la temporada"
-      " seleccionada."
-  )
-  st.stop()
+    df_categoria = df_temporada[df_temporada["Categoria_filtro"].eq(categoria)].copy()
 
 
-col_liga, col_filtros_dependientes = st.columns([2.2, 3.9])
+    # ============================================================
+    # COMPETICIÓN
+    # ============================================================
 
-with col_liga:
-  liga = st.selectbox("🏆 Competición", ligas)
-
-
-df_liga = df_categoria[df_categoria["Liga_filtro"].eq(liga)].copy()
-
-
-# ============================================================
-# GRUPO
-# ============================================================
-
-grupos_configuracion = grupos_configurados(categoria, liga)
-
-tiene_selector_grupo = any(
-    grupo_configurado is not None for grupo_configurado in grupos_configuracion
-)
+    ligas_reales = [
+        liga
+        for liga in df_categoria["Liga_filtro"].dropna().astype(str).unique()
+        if liga.strip() and liga.lower() != "nan"
+    ]
 
 
-if tiene_selector_grupo:
-  grupos_permitidos = [
-      grupo_configurado
-      for grupo_configurado in grupos_configuracion
-      if grupo_configurado is not None
-  ]
+    ligas = []
 
-  grupos_reales = [
-      grupo_real
-      for grupo_real in df_liga["Grupo_filtro"].dropna().astype(str).unique()
-      if grupo_real.strip() and grupo_real.lower() != "nan"
-  ]
+    for objetivo in OBJETIVOS:
+      if objetivo["categoria"] != categoria:
+        continue
 
-  grupos_disponibles = []
+      for alias in objetivo["competicion"]:
+        coincidencias = [
+            liga_real
+            for liga_real in ligas_reales
+            if normalizar_texto(liga_real) == normalizar_texto(alias)
+        ]
 
-  for grupo_configurado in grupos_permitidos:
-    existe_en_datos = any(
-        normalizar_grupo(grupo_real) == normalizar_grupo(grupo_configurado)
-        for grupo_real in grupos_reales
+        for coincidencia in coincidencias:
+          if coincidencia not in ligas:
+            ligas.append(coincidencia)
+
+
+    if not ligas:
+      st.warning(
+          "No hay competiciones disponibles para esta categoría en la temporada"
+          " seleccionada."
+      )
+      return
+
+
+    col_liga, col_filtros_dependientes = st.columns([2.2, 3.9])
+
+    with col_liga:
+      liga = st.selectbox("🏆 Competición", ligas)
+
+
+    df_liga = df_categoria[df_categoria["Liga_filtro"].eq(liga)].copy()
+
+
+    # ============================================================
+    # GRUPO
+    # ============================================================
+
+    grupos_configuracion = grupos_configurados(categoria, liga)
+
+    tiene_selector_grupo = any(
+        grupo_configurado is not None for grupo_configurado in grupos_configuracion
     )
 
-    if existe_en_datos:
-      grupos_disponibles.append(grupo_configurado)
 
-  grupos = ["Todos"] + grupos_disponibles
+    if tiene_selector_grupo:
+      grupos_permitidos = [
+          grupo_configurado
+          for grupo_configurado in grupos_configuracion
+          if grupo_configurado is not None
+      ]
 
-  with col_filtros_dependientes:
-    col_grupo, col_equipo = st.columns([1.7, 2.2])
+      grupos_reales = [
+          grupo_real
+          for grupo_real in df_liga["Grupo_filtro"].dropna().astype(str).unique()
+          if grupo_real.strip() and grupo_real.lower() != "nan"
+      ]
 
-    with col_grupo:
-      grupo = st.selectbox("📍 Grupo", grupos)
+      grupos_disponibles = []
 
-  if grupo != "Todos":
-    grupo_normalizado = normalizar_grupo(grupo)
+      for grupo_configurado in grupos_permitidos:
+        existe_en_datos = any(
+            normalizar_grupo(grupo_real) == normalizar_grupo(grupo_configurado)
+            for grupo_real in grupos_reales
+        )
 
-    df_grupo = df_liga[
-        df_liga["Grupo_filtro"].apply(normalizar_grupo).eq(grupo_normalizado)
-    ].copy()
-  else:
-    df_grupo = df_liga.copy()
+        if existe_en_datos:
+          grupos_disponibles.append(grupo_configurado)
 
-else:
-  grupo = None
-  df_grupo = df_liga.copy()
+      grupos = ["Todos"] + grupos_disponibles
 
-  with col_filtros_dependientes:
-    col_equipo = st.container()
+      with col_filtros_dependientes:
+        col_grupo, col_equipo = st.columns([1.7, 2.2])
 
+        with col_grupo:
+          grupo = st.selectbox("📍 Grupo", grupos)
 
-# ============================================================
-# EQUIPO
-# ============================================================
+      if grupo != "Todos":
+        grupo_normalizado = normalizar_grupo(grupo)
 
-equipos = sorted([
-    equipo
-    for equipo in df_grupo["Equipo_filtro"].dropna().astype(str).unique()
-    if equipo.strip() and equipo.lower() != "nan"
-])
+        df_grupo = df_liga[
+            df_liga["Grupo_filtro"].apply(normalizar_grupo).eq(grupo_normalizado)
+        ].copy()
+      else:
+        df_grupo = df_liga.copy()
 
+    else:
+      grupo = None
+      df_grupo = df_liga.copy()
 
-if not equipos:
-  st.warning("No hay equipos disponibles para estos filtros.")
-  st.stop()
-
-
-with col_equipo:
-  equipo = st.selectbox("🛡️ Equipo", equipos)
+      with col_filtros_dependientes:
+        col_equipo = st.container()
 
 
-# ============================================================
-# OBTENER PLANTILLA
-# ============================================================
+    # ============================================================
+    # EQUIPO
+    # ============================================================
 
-plantilla = (
-    df_grupo[df_grupo["Equipo_filtro"].eq(equipo)]
-    .sort_values(
-        ["Titular", "Jugados", "Total_Goles"],
-        ascending=[False, False, False],
-        na_position="last",
+    equipos = sorted([
+        equipo
+        for equipo in df_grupo["Equipo_filtro"].dropna().astype(str).unique()
+        if equipo.strip() and equipo.lower() != "nan"
+    ])
+
+
+    if not equipos:
+      st.warning("No hay equipos disponibles para estos filtros.")
+      return
+
+
+    with col_equipo:
+      equipo = st.selectbox("🛡️ Equipo", equipos)
+
+
+    # ============================================================
+    # OBTENER PLANTILLA
+    # ============================================================
+
+    plantilla = (
+        df_grupo[df_grupo["Equipo_filtro"].eq(equipo)]
+        .sort_values(
+            ["Titular", "Jugados", "Total_Goles"],
+            ascending=[False, False, False],
+            na_position="last",
+        )
+        .drop_duplicates(subset=["Jugador"])
+        .reset_index(drop=True)
     )
-    .drop_duplicates(subset=["Jugador"])
-    .reset_index(drop=True)
-)
 
 
-posicion_equipo = primer_valor(plantilla["Posicion_equipo"])
-puntos_equipo = primer_valor(plantilla["Puntos_equipo"])
-grupo_equipo = primer_valor(plantilla["Grupo_filtro"])
+    posicion_equipo = primer_valor(plantilla["Posicion_equipo"])
+    puntos_equipo = primer_valor(plantilla["Puntos_equipo"])
+    grupo_equipo = primer_valor(plantilla["Grupo_filtro"])
 
 
-# ============================================================
-# SIDEBAR - ALINEACIÓN
-# ============================================================
 
-st.sidebar.header("Alineación")
+  # ============================================================
+  # SIDEBAR - ALINEACIÓN
+  # ============================================================
 
-formacion = st.sidebar.selectbox("Formación", list(FORMACIONES.keys()))
+  st.header("Alineación")
 
-lista_jugadores = (
-    plantilla["Jugador"].dropna().astype(str).drop_duplicates().tolist()
-)
+  formacion = st.selectbox("Formación", list(FORMACIONES.keys()))
 
-puestos = FORMACIONES[formacion]
-
-claves_puestos = {}
-
-for puesto, x, y in puestos:
-  clave = (
-      f"alineacion_{temporada}_{liga}_"
-      f"{grupo if grupo is not None else 'SIN_GRUPO'}_{equipo}_{formacion}_{puesto}"
+  lista_jugadores = (
+      plantilla["Jugador"].dropna().astype(str).drop_duplicates().tolist()
   )
-  claves_puestos[puesto] = clave
+
+  puestos = FORMACIONES[formacion]
+
+  claves_puestos = {}
+
+  for puesto, x, y in puestos:
+    clave = (
+        f"alineacion_{temporada}_{liga}_"
+        f"{grupo if grupo is not None else 'SIN_GRUPO'}_{equipo}_{formacion}_{puesto}"
+    )
+    claves_puestos[puesto] = clave
 
 
-ya_usados = set()
+  ya_usados = set()
 
-for puesto, _, _ in puestos:
-  clave = claves_puestos[puesto]
-  valor = st.session_state.get(clave, SIN_SELECCION)
-
-  if valor != SIN_SELECCION and valor in ya_usados:
-    st.session_state[clave] = SIN_SELECCION
-  elif valor != SIN_SELECCION:
-    ya_usados.add(valor)
-
-
-if st.sidebar.button("🗑️ Limpiar alineación", width="stretch"):
   for puesto, _, _ in puestos:
     clave = claves_puestos[puesto]
-    st.session_state[clave] = SIN_SELECCION
-  st.rerun()
+    valor = st.session_state.get(clave, SIN_SELECCION)
+
+    if valor != SIN_SELECCION and valor in ya_usados:
+      st.session_state[clave] = SIN_SELECCION
+    elif valor != SIN_SELECCION:
+      ya_usados.add(valor)
 
 
-seleccionados = {}
-
-for puesto, x, y in puestos:
-  clave = claves_puestos[puesto]
-  actual = st.session_state.get(clave, SIN_SELECCION)
-
-  usados_en_otros = set()
-  for otro_puesto, _, _ in puestos:
-    if otro_puesto == puesto:
-      continue
-    otra_clave = claves_puestos[otro_puesto]
-    otro_jugador = st.session_state.get(otra_clave, SIN_SELECCION)
-    if otro_jugador != SIN_SELECCION:
-      usados_en_otros.add(otro_jugador)
-
-  opciones = [SIN_SELECCION]
-  for jugador in lista_jugadores:
-    if jugador not in usados_en_otros or jugador == actual:
-      opciones.append(jugador)
-
-  if actual not in opciones:
-    actual = SIN_SELECCION
-    st.session_state[clave] = SIN_SELECCION
-
-  indice = opciones.index(actual)
-
-  jugador = st.sidebar.selectbox(puesto, opciones, index=indice, key=clave)
-
-  if jugador != SIN_SELECCION:
-    seleccionados[puesto] = jugador
+  if st.button("🗑️ Limpiar alineación", width="stretch"):
+    for puesto, _, _ in puestos:
+      clave = claves_puestos[puesto]
+      st.session_state[clave] = SIN_SELECCION
+    st.rerun(scope="fragment")
 
 
-st.sidebar.caption(f"{len(seleccionados)}/11 jugadores seleccionados")
+  seleccionados = {}
+
+  for puesto, x, y in puestos:
+    clave = claves_puestos[puesto]
+    actual = st.session_state.get(clave, SIN_SELECCION)
+
+    usados_en_otros = set()
+    for otro_puesto, _, _ in puestos:
+      if otro_puesto == puesto:
+        continue
+      otra_clave = claves_puestos[otro_puesto]
+      otro_jugador = st.session_state.get(otra_clave, SIN_SELECCION)
+      if otro_jugador != SIN_SELECCION:
+        usados_en_otros.add(otro_jugador)
+
+    opciones = [SIN_SELECCION]
+    for jugador in lista_jugadores:
+      if jugador not in usados_en_otros or jugador == actual:
+        opciones.append(jugador)
+
+    if actual not in opciones:
+      actual = SIN_SELECCION
+      st.session_state[clave] = SIN_SELECCION
+
+    indice = opciones.index(actual)
+
+    jugador = st.selectbox(puesto, opciones, index=indice, key=clave)
+
+    if jugador != SIN_SELECCION:
+      seleccionados[puesto] = jugador
 
 
-# ============================================================
-# CAMPO DE FÚTBOL
-# ============================================================
+  st.caption(f"{len(seleccionados)}/11 jugadores seleccionados")
 
-pitch = VerticalPitch(
-    pitch_type="statsbomb",
-    pitch_color="#2f7d4f",
-    line_color="white",
-    linewidth=2,
-    goal_type="box",
-    pad_top=3,
-    pad_bottom=3,
-)
 
-fig, ax = pitch.draw(figsize=(5, 7))
-fig.patch.set_facecolor("#0e1117")
 
-ax.set_title(
-    f"{equipo}\n{formacion}",
-    color="white",
-    fontsize=14,
-    fontweight="bold",
-    pad=10,
-)
+  with zona_campo.container():
+    # ============================================================
+    # CAMPO DE FÚTBOL
+    # ============================================================
 
-for puesto, x, y in puestos:
-  jugador = seleccionados.get(puesto)
+    pitch = VerticalPitch(
+        pitch_type="statsbomb",
+        pitch_color="#2f7d4f",
+        line_color="white",
+        linewidth=2,
+        goal_type="box",
+        pad_top=3,
+        pad_bottom=3,
+    )
 
-  pitch.scatter(
-      x,
-      y,
-      ax=ax,
-      s=650,
-      color="#2066b3" if jugador else "#555555",
-      edgecolors="white",
-      linewidth=2,
-      zorder=3,
-  )
+    fig, ax = pitch.draw(figsize=(5, 7))
+    fig.patch.set_facecolor("#0e1117")
 
-  pitch.annotate(
-      puesto,
-      xy=(x, y),
-      ax=ax,
-      ha="center",
-      va="center",
-      color="white",
-      fontsize=7.5,
-      fontweight="bold",
-      zorder=4,
-  )
-
-  if jugador:
-    pitch.annotate(
-        nombre_corto(jugador),
-        xy=(x, y),
-        xytext=(0, -24),
-        textcoords="offset points",
-        ax=ax,
-        ha="center",
-        va="top",
+    ax.set_title(
+        f"{equipo}\n{formacion}",
         color="white",
-        fontsize=7.5,
+        fontsize=14,
         fontweight="bold",
-        bbox=dict(
-            boxstyle="round,pad=0.22", fc="#111111", ec="none", alpha=0.88
-        ),
-        zorder=5,
+        pad=10,
     )
 
-espacio_izq, columna_campo, espacio_der = st.columns([1.15, 1.45, 1.15])
+    for puesto, x, y in puestos:
+      jugador = seleccionados.get(puesto)
 
-with columna_campo:
-  st.pyplot(fig, width="stretch")
+      pitch.scatter(
+          x,
+          y,
+          ax=ax,
+          s=650,
+          color="#2066b3" if jugador else "#555555",
+          edgecolors="white",
+          linewidth=2,
+          zorder=3,
+      )
 
-plt.close(fig)
+      pitch.annotate(
+          puesto,
+          xy=(x, y),
+          ax=ax,
+          ha="center",
+          va="center",
+          color="white",
+          fontsize=7.5,
+          fontweight="bold",
+          zorder=4,
+      )
+
+      if jugador:
+        pitch.annotate(
+            nombre_corto(jugador),
+            xy=(x, y),
+            xytext=(0, -24),
+            textcoords="offset points",
+            ax=ax,
+            ha="center",
+            va="top",
+            color="white",
+            fontsize=7.5,
+            fontweight="bold",
+            bbox=dict(
+                boxstyle="round,pad=0.22", fc="#111111", ec="none", alpha=0.88
+            ),
+            zorder=5,
+        )
+
+    espacio_izq, columna_campo, espacio_der = st.columns([1.15, 1.45, 1.15])
+
+    with columna_campo:
+      st.pyplot(fig, width="stretch")
+
+    plt.close(fig)
 
 
-# ============================================================
-# XI SELECCIONADO
-# ============================================================
+    # ============================================================
+    # XI SELECCIONADO
+    # ============================================================
 
-if seleccionados:
-  st.subheader("XI seleccionado")
+    if seleccionados:
+      st.subheader("XI seleccionado")
 
-  filas = []
+      filas = []
 
-  for puesto, _, _ in puestos:
-    if puesto not in seleccionados:
-      continue
+      for puesto, _, _ in puestos:
+        if puesto not in seleccionados:
+          continue
 
-    jugador = seleccionados[puesto]
-    coincidencias = plantilla[plantilla["Jugador"].eq(jugador)]
+        jugador = seleccionados[puesto]
+        coincidencias = plantilla[plantilla["Jugador"].eq(jugador)]
 
-    if coincidencias.empty:
-      continue
+        if coincidencias.empty:
+          continue
 
-    fila = coincidencias.iloc[0].copy()
-    fila["Puesto"] = puesto
-    filas.append(fila)
+        fila = coincidencias.iloc[0].copy()
+        fila["Puesto"] = puesto
+        filas.append(fila)
 
-  if filas:
-    xi = pd.DataFrame(filas)
+      if filas:
+        xi = pd.DataFrame(filas)
 
-    columnas_xi = [
-        "Puesto",
-        "Jugador",
-        "Año_nacimiento",
-        "Jugados",
-        "Titular",
-        "Suplente",
-        "Total_Goles",
-        "Amarillas",
-        "Rojas",
-    ]
+        columnas_xi = [
+            "Puesto",
+            "Jugador",
+            "Año_nacimiento",
+            "Jugados",
+            "Titular",
+            "Suplente",
+            "Total_Goles",
+            "Amarillas",
+            "Rojas",
+        ]
 
-    columnas_xi = [columna for columna in columnas_xi if columna in xi.columns]
+        columnas_xi = [columna for columna in columnas_xi if columna in xi.columns]
 
-    tabla_xi = xi[columnas_xi].copy()
+        tabla_xi = xi[columnas_xi].copy()
 
-    st.dataframe(tabla_xi, width="stretch", hide_index=True)
+        st.dataframe(tabla_xi, width="stretch", hide_index=True)
 
-    st.download_button(
-        "📥 Descargar Excel (.xlsx)",
-        data=dataframe_a_excel(tabla_xi, "XI seleccionado"),
-        file_name=f"XI_{nombre_archivo_seguro(equipo)}_{nombre_archivo_seguro(temporada)}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="guardar_xi_excel",
-    )
+        st.download_button(
+            "📥 Descargar Excel (.xlsx)",
+            data=dataframe_a_excel(tabla_xi, "XI seleccionado"),
+            file_name=f"XI_{nombre_archivo_seguro(equipo)}_{nombre_archivo_seguro(temporada)}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="guardar_xi_excel",
+        )
 
-# ============================================================
-# PLANTILLA COMPLETA
-# ============================================================
+    # ============================================================
+    # PLANTILLA COMPLETA
+    # ============================================================
 
-with st.expander(f"📋 Plantilla completa ({len(plantilla)} jugadores)"):
-  columnas_tabla = [
-      "Jugador",
-      "Año_nacimiento",
-      "Estado",
-      "Convocados",
-      "Titular",
-      "Suplente",
-      "Jugados",
-      "Total_Goles",
-      "Media_Goles",
-      "Amarillas",
-      "Rojas",
-      "Doble_Amarilla",
-  ]
+    with st.expander(f"📋 Plantilla completa ({len(plantilla)} jugadores)"):
+      columnas_tabla = [
+          "Jugador",
+          "Año_nacimiento",
+          "Estado",
+          "Convocados",
+          "Titular",
+          "Suplente",
+          "Jugados",
+          "Total_Goles",
+          "Media_Goles",
+          "Amarillas",
+          "Rojas",
+          "Doble_Amarilla",
+      ]
 
-  columnas_tabla = [
-      columna for columna in columnas_tabla if columna in plantilla.columns
-  ]
+      columnas_tabla = [
+          columna for columna in columnas_tabla if columna in plantilla.columns
+      ]
 
-  tabla_plantilla = plantilla[columnas_tabla].copy()
+      tabla_plantilla = plantilla[columnas_tabla].copy()
 
-  st.dataframe(tabla_plantilla, width="stretch", hide_index=True)
+      st.dataframe(tabla_plantilla, width="stretch", hide_index=True)
 
-  st.download_button(
-      "📥 Descargar Excel (.xlsx)",
-      data=dataframe_a_excel(tabla_plantilla, "Plantilla"),
-      file_name=f"plantilla_{nombre_archivo_seguro(equipo)}_{nombre_archivo_seguro(temporada)}.xlsx",
-      mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      key="guardar_plantilla_excel",
-  )
+      st.download_button(
+          "📥 Descargar Excel (.xlsx)",
+          data=dataframe_a_excel(tabla_plantilla, "Plantilla"),
+          file_name=f"plantilla_{nombre_archivo_seguro(equipo)}_{nombre_archivo_seguro(temporada)}.xlsx",
+          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          key="guardar_plantilla_excel",
+      )
 
-# ============================================================
+    # ============================================================
+
+# El cuerpo principal del fragmento vive en la barra lateral. Las dos zonas
+# vacías reciben los filtros y el campo sin acumular elementos tras cada rerun.
+zona_filtros_alineacion = st.empty()
+zona_campo_alineacion = st.empty()
+with st.sidebar:
+  panel_alineaciones_vivo(zona_filtros_alineacion, zona_campo_alineacion)
