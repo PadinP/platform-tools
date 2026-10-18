@@ -594,33 +594,21 @@ if df_original.empty:
   panel_scraper()
   # Mostrar la misma estructura principal aunque todavía no haya filas.
   # Los controles dependientes de jugadores permanecen deshabilitados.
-  st.subheader("Base de datos de jugadores")
-  st.caption("0 registros mostrados")
-  f1, f2, f3 = st.columns(3)
-  with f1:
-    st.selectbox("Año de nacimiento", ["Todos"], disabled=True, key="empty_anio")
-  with f2:
-    st.selectbox("Temporada", ["Todos"], disabled=True, key="empty_temporada_bd")
-  with f3:
-    st.selectbox("Categoría", ["Todos"], disabled=True, key="empty_categoria_bd")
-  f4, f5, f6 = st.columns(3)
-  with f4:
-    st.selectbox("Competición", ["Todos"], disabled=True, key="empty_competicion_bd")
-  with f5:
-    st.selectbox("Grupo", ["Todos"], disabled=True, key="empty_grupo_bd")
-  with f6:
-    st.selectbox("Equipo", ["Todos"], disabled=True, key="empty_equipo_bd")
-  st.text_input("Jugador", placeholder="Escribe nombre o apellido...", disabled=True,
-                key="empty_busqueda_jugador")
-  columnas_vacias = ["Jugador", "Año_nacimiento", "Temporada", "Categoria_origen",
-                     "Competicion_origen", "Grupo_origen", "Equipo_origen",
-                     "Club_en_temporada", "Estado", "Convocados", "Titular", "Suplente",
-                     "Jugados", "Total_Goles", "Media_Goles", "Amarillas", "Rojas",
-                     "Doble_Amarilla"]
-  st.dataframe(pd.DataFrame(columns=columnas_vacias), width="stretch",
-               height=430, hide_index=True)
-  st.download_button("📥 Descargar Excel (.xlsx)", data=b"", disabled=True,
-                     key="empty_descargar_excel")
+  @st.fragment(run_every="5s")
+  def mostrar_jugadores_iniciales():
+    st.subheader("Base de datos de jugadores")
+    try:
+      registros = normalizar_columnas_sql(leer_jugadores_supabase())
+    except Exception:
+      st.warning("No se pudo consultar Supabase. Reintentando…")
+      return
+    st.caption(f"{len(registros)} registros mostrados")
+    if registros.empty:
+      st.info("Los jugadores aparecerán aquí en cuanto se guarden.")
+    else:
+      st.dataframe(registros, width="stretch", hide_index=True, height=430)
+      st.caption("Para habilitar los selectores de alineación al comenzar desde cero, todavía hay que recargar la página. Esta limitación se resolverá al trasladar la alineación a un fragmento independiente.")
+  mostrar_jugadores_iniciales()
 
   st.divider()
   st.subheader("Selección de equipo para la alineación")
@@ -694,7 +682,7 @@ def filtrar_por_texto(df_base, columna, valor):
   ].copy()
 
 
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=3, show_spinner=False)
 def leer_jugadores_tabla_viva():
   """Consulta jugadores sin invalidar ni recargar el resto de la pagina."""
   registros = []
@@ -707,7 +695,7 @@ def leer_jugadores_tabla_viva():
   return normalizar_columnas_sql(pd.DataFrame(registros))
 
 
-@st.fragment(run_every="20s")
+@st.fragment(run_every="5s")
 def panel_jugadores_vivo():
   """Solo vuelve a dibujar la tabla y sus filtros, no toda la aplicacion."""
   try:

@@ -26,11 +26,13 @@ const FIELDS={
 };
 let adb=null, running=false, cancelled=false, args={}, seq=0, pendingAck=null;
 let usbDisconnected=false, activeCommandCancel=null;
-let resumeOnUsbReconnect=false, reconnectAttempting=false, confirmedCheckpoint=null;
+let resumeOnUsbReconnect=false, reconnectAttempting=false, confirmedCheckpoint=null, pausedByUser=false;
 const clientSession=crypto.randomUUID();
 let checkpoint={jugadores:[],equipos:[],partidos:[],grupos:[],anonymous_rows:{}};
 let players=new Set(),teams=new Set(),matches=new Set(),groups=new Set(),anonymous={};
 let progress={players:0,teams:0,matches:0};
+const showProgress=(field,value)=>{const e=$(field);if(e)e.textContent=String(value)};
+function showTeamCount(done,total){showProgress('progress-squad',`${done} / ${total}`);const bar=$('progress-bar');if(bar)bar.value=total?Math.round(100*done/total):0}
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const norm=v=>String(v??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]/g,'');
 const clean=v=>String(v??'').replace(/[\uE000-\uF8FF]/g,'').replace(/\s+/g,' ').trim();
@@ -108,7 +110,7 @@ async function flushDiagnostics(){
   }finally{flushingDiagnostics=false;}
 }
 
-function draw(){btn.textContent=running?'⏹ Detener actualización':'▶ Actualizar jugadores';btn.disabled=false}
+function draw(){btn.textContent=running?'⏸ Pausar actualización':(resumeOnUsbReconnect?'▶ Reanudar actualización':'▶ Actualizar jugadores');btn.disabled=false}
 function guard(){if(usbDisconnected)throw new Error('USB_DISCONNECTED');if(cancelled)throw new Error('STOP_REQUESTED')}
 function decode(value){if(typeof value==='string')return value.trim();if(value instanceof Uint8Array||value instanceof ArrayBuffer)return new TextDecoder().decode(value).trim();return String(value??'').trim()}
 // Todos los comandos tienen tiempo máximo y pueden cancelarse sin esperar al socket USB.
@@ -272,7 +274,7 @@ function blockStatus(block){for(const n of descendants(block)){const s=norm(txt(
 function visibleMatches(root){const list=first(root,'competition-calendar-list');if(!list)return [];const items=[];for(const block of Array.from(list.children)){const s=blockStatus(block);const node=pickOne(block,n=>n.getAttribute('clickable')==='true'&&bounds(n));if(!node&&!SKIP.has(s))continue;let local='',away='',date='';const teams=[];for(const n of descendants(block)){const v=clean(txt(n)),b=bounds(n);if(!v||!b)continue;if(/^\d{2}\/\d{2}\/\d{4}$/.test(v)){date=v;continue}if(/^\d{1,2}:\d{2}$/.test(v)||/^\d+\s*-\s*\d+$/.test(v)||/^\d+$/.test(v)||['FINALIZADO','SUSPENDIDO','APLAZADO','PENDIENTE','ENJUEGO','CANCELADO','ANULADO'].includes(norm(v)))continue;if(b[0]>=180&&b[0]<=780&&(!teams.length||norm(teams.at(-1))!==norm(v)))teams.push(v)}if(teams.length>=2){[local,away]=teams;items.push({local,away,date,status:s,node})}}return items}
 function matchSignature(root){return visibleMatches(root).map(m=>key(m.local,m.away,m.date)).join('~')}
 async function scrollMatches(root){const list=first(root,'competition-calendar-list');if(!list)throw new Error('Lista de partidos no visible');await swipe(list,.84,.37,190)}
-async function processMatchday(category,competition,group,day){const selected=await selectDay(day);if(selected!==true)return selected;log(`Jornada ${day}`);const seen=new Set();let stagnant=0;for(let scan=0;scan<55;scan++){let root=await dump();let candidate=null;for(const m of visibleMatches(root)){const k=key(m.local,m.away,m.date);if(!seen.has(k)){seen.add(k);candidate=m;break}}if(candidate){log(`Partido: ${candidate.local} vs ${candidate.away}${candidate.status?' ['+candidate.status+']':''}`);const result=await processMatch(category,competition,group,candidate);if(result===false)return false;continue}const before=matchSignature(root);await scrollMatches(root);root=await dump();const after=matchSignature(root);stagnant=before===after?stagnant+1:0;if(stagnant>=2)break}return true}
+async function processMatchday(category,competition,group,day){const selected=await selectDay(day);if(selected!==true)return selected;showProgress('progress-day',day);log(`Jornada ${day}`);const seen=new Set();let stagnant=0;for(let scan=0;scan<55;scan++){let root=await dump();let candidate=null;for(const m of visibleMatches(root)){const k=key(m.local,m.away,m.date);if(!seen.has(k)){seen.add(k);candidate=m;break}}if(candidate){log(`Partido: ${candidate.local} vs ${candidate.away}${candidate.status?' ['+candidate.status+']':''}`);const result=await processMatch(category,competition,group,candidate);if(result===false)return false;continue}const before=matchSignature(root);await scrollMatches(root);root=await dump();const after=matchSignature(root);stagnant=before===after?stagnant+1:0;if(stagnant>=2)break}return true}
 async function processMatch(category,competition,group,m){const mk=key(category,competition,group,m.local,m.away,m.date),lk=key(category,competition,group,m.local),ak=key(category,competition,group,m.away);if(matches.has(mk)||(teams.has(lk)&&teams.has(ak))){matches.add(mk);await saveCheckpoint();return true}if(SKIP.has(m.status)){log(`Omitiendo partido ${m.status}`);return 'SKIP'}if(!m.node)return 'SKIP';await tap(m.node,'Partido');let r=await until('match',7);if(!r){log('Partido no abre; se omite');return 'SKIP'}const local=val(first(r,'match-header-local-team-button')),away=val(first(r,'match-header-away-team-button'));if(!local||!away)throw new Error('Faltan botones de equipos en ficha');log(`PARTIDO: ${local} vs ${away}`);if(!await processTeam(category,competition,group,'match-header-local-team-button'))return false;if(!await processTeam(category,competition,group,'match-header-away-team-button'))return false;await back();if(!await until('competition'))return false;matches.add(mk);await saveCheckpoint();progress.matches++;log(`✓ PARTIDO COMPLETADO: ${local} vs ${away}`);return true}
 function teamName(root){const card=first(root,'team-header-card');return clean(descendants(card).map(txt).find(v=>clean(v))||'')}
 function rowName(node){const d=clean(desc(node));if(playerValid(d))return d;const items=descendants(node).map(n=>clean(txt(n))).filter(playerValid);return items.find(v=>v.includes(','))||items[0]||''}
@@ -285,7 +287,7 @@ function expectedCount(root){const modal=first(root,'team-plantilla-modal');if(!
 async function openSquad(root){const btn=first(root,'team-header-templates-button');if(!btn)throw new Error('Falta botón plantilla');await tap(btn,'Plantilla');return until('squad')}
 async function closeSquad(root){const btn=first(root,'team-plantilla-close-button');if(btn)await tap(btn,'Cerrar plantilla');else await back();return until('team')}
 async function backToSquad(){await back();let r=await until(['team','squad']);if(!r)return null;if(state(r)==='team')r=await openSquad(r);return r}
-async function processTeam(category,competition,group,id){let root=await dump(),btn=first(root,id);if(!btn)return false;const hint=clean(desc(btn)),hintkey=key(category,competition,group,hint);if(teams.has(hintkey)){log(`Equipo ya completado: ${hint}`);return true}await tap(btn,'Equipo '+hint);root=await until('team');if(!root)return false;const name=teamName(root)||hint,tk=key(category,competition,group,name);if(teams.has(tk)){await back();return Boolean(await until('match'))}log(`EQUIPO: ${name}`);root=await openSquad(root);if(!root)return false;const expected=expectedCount(root);if(expected==null){log('No pude leer contador JUGADORES/AS, no marco equipo como completo');return false}let done=()=>[...players].filter(p=>p.startsWith(key(category,competition,group,name)+'|||')).length;log(`La app indica ${expected} jugadores. Procesados ${done()}/${expected}`);let passes=0,errors=0;while(done()<expected){guard();const result=await firstPending(root,category,competition,group,name);root=result.root;if(result.row){const row=result.row,p=safePoint(root,row);if(!p){errors++;if(errors>10)return false;continue}await shell(`input tap ${p[0]} ${p[1]}`);root=await until('player');if(!root){log(`No abre jugador ${row.name||'(sin nombre)'}`);return false}const success=await processPlayer(category,competition,group,name,row.name,root,result.anonkey);root=await backToSquad();if(!root)return false;if(!success){errors++;if(errors>=12){log('Demasiados errores en plantilla, no la marcaré completa');return false}}else errors=0;continue}if(done()>=expected)break;passes++;log(`Revisión plantilla ${passes}: ${done()}/${expected}`);if(passes>=10){log('Plantilla incompleta; checkpoint conservado');return false}let teamRoot=await closeSquad(root);if(!teamRoot)return false;root=await openSquad(teamRoot);if(!root)return false}const teamRoot=await closeSquad(root);if(!teamRoot)return false;teams.add(tk);teams.add(hintkey);await saveCheckpoint();progress.teams++;log(`✓ EQUIPO COMPLETADO: ${name} (${done()}/${expected})`);await back();return Boolean(await until('match'))}
+async function processTeam(category,competition,group,id){let root=await dump(),btn=first(root,id);if(!btn)return false;const hint=clean(desc(btn)),hintkey=key(category,competition,group,hint);if(teams.has(hintkey)){log(`Equipo ya completado: ${hint}`);return true}await tap(btn,'Equipo '+hint);root=await until('team');if(!root)return false;const name=teamName(root)||hint,tk=key(category,competition,group,name);if(teams.has(tk)){await back();return Boolean(await until('match'))}log(`EQUIPO: ${name}`);root=await openSquad(root);if(!root)return false;const expected=expectedCount(root);if(expected==null){log('No pude leer contador JUGADORES/AS, no marco equipo como completo');return false}let done=()=>[...players].filter(p=>p.startsWith(key(category,competition,group,name)+'|||')).length;showProgress('progress-team',name);showTeamCount(done(),expected);log(`La app indica ${expected} jugadores. Procesados ${done()}/${expected}`);let passes=0,errors=0;while(done()<expected){guard();const result=await firstPending(root,category,competition,group,name);root=result.root;if(result.row){const row=result.row,p=safePoint(root,row);if(!p){errors++;if(errors>10)return false;continue}await shell(`input tap ${p[0]} ${p[1]}`);root=await until('player');if(!root){log(`No abre jugador ${row.name||'(sin nombre)'}`);return false}const success=await processPlayer(category,competition,group,name,row.name,root,result.anonkey);root=await backToSquad();if(!root)return false;if(!success){errors++;if(errors>=12){log('Demasiados errores en plantilla, no la marcaré completa');return false}}else {errors=0;showTeamCount(done(),expected)}continue}if(done()>=expected)break;passes++;log(`Revisión plantilla ${passes}: ${done()}/${expected}`);if(passes>=10){log('Plantilla incompleta; checkpoint conservado');return false}let teamRoot=await closeSquad(root);if(!teamRoot)return false;root=await openSquad(teamRoot);if(!root)return false}const teamRoot=await closeSquad(root);if(!teamRoot)return false;teams.add(tk);teams.add(hintkey);await saveCheckpoint();progress.teams++;log(`✓ EQUIPO COMPLETADO: ${name} (${done()}/${expected})`);await back();return Boolean(await until('match'))}
 // Lectura por temporada: mismas etiquetas y reglas de v13.
 function header(root){return first(root,'player-header-card')}
 function panel(root){return header(root)?.parentElement||null}
@@ -302,7 +304,7 @@ function resolvedName(roster,results){if(playerValid(roster))return clean(roster
 const numerics=new Set(['año_nacimiento','convocados','titular','suplente','jugados','total_goles','amarillas','rojas','doble_amarilla']);
 function buildRow(category,competition,group,team,season,result,name,year){const d=result.data;const row={Temporada:season,Categoria_origen:category,Competicion_origen:competition,Grupo_origen:group||'',Equipo_origen:team,Jugador:name,Año_nacimiento:d.Ano||year,Club_en_temporada:d.Club||'',Estado:d.Estado||'',Convocados:d.Convocados,Titular:d.Titular,Suplente:d.Suplente,Jugados:d.Jugados,Total_Goles:d['Total Goles'],Media_Goles:d['Media Goles'],Amarillas:d.Amarillas,Rojas:d.Rojas,Doble_Amarilla:d['Doble Amarilla'],Competiciones_temporada:result.comps};const out={};for(const [original,sql] of Object.entries(FIELDS)){const val=row[original];if(numerics.has(sql))out[sql]=val==null||val===''?null:Number(String(val).replace(',','.'));else if(sql==='media_goles')out[sql]=val==null||val===''?null:Number(String(val).replace(',','.'));else out[sql]=val==null?'':String(val)}return out}
 async function processPlayer(category,competition,group,team,roster,root,anonkey){root=await waitPlayer(root);if(!root){log('Ficha jugador no cargó');return false}const seasons={};seasons['26-27']=await seasonData(root);for(const s of ['25-26','24-25']){const historical=await selectSeason(s);if(historical)seasons[s]=await seasonData(historical);else seasons[s]=null}const name=resolvedName(roster,seasons);if(!name){log('Jugador sin nombre en 26-27/25-26/24-25; pendiente, no se marca completo');return false}const year=SEASONS.map(s=>seasons[s]?.data?.Ano).find(Boolean)||'',pk=key(category,competition,group,team,name);if(anonkey){anonymous[anonkey]=name;await saveCheckpoint()}if(players.has(pk))return true;let rows=0;for(const s of SEASONS){const result=seasons[s];if(!result)continue;result.data.Jugador=name;const row=buildRow(category,competition,group,team,s,result,name,year);await saveRow(row);rows++}if(!rows)return false;players.add(pk);await saveCheckpoint();progress.players++;log(`✓ JUGADOR: ${name} (${rows} temporadas)`);return true}
-async function processTarget(target,requestedGroup){const alias=target.aliases.find(a=>groups.has(key(target.category,a,requestedGroup||'')));if(alias){log(`✓ Objetivo completo (checkpoint): ${target.category} | ${alias} | ${requestedGroup||'-'}`);return}const {competition,group}=await openTarget(target,requestedGroup);const groupKey=key(target.category,competition,group);if(groups.has(groupKey))return;log(`INICIANDO ${target.category} | ${competition} | ${group||'-'}`);let lastDay=0,ended=false;for(let day=1;day<=60;day++){guard();const result=await processMatchday(target.category,competition,group,day);if(result==='END'){ended=true;log(`✓ Fin de jornadas detectado en ${lastDay}`);break}if(result!==true)throw new Error(`No se pudo terminar jornada ${day}; checkpoint conservado`);lastDay=day}if(!ended)throw new Error('Límite de seguridad de 60 jornadas sin detectar final');groups.add(groupKey);await saveCheckpoint();log(`✓ OBJETIVO COMPLETADO: ${competition}`)}
+async function processTarget(target,requestedGroup){const alias=target.aliases.find(a=>groups.has(key(target.category,a,requestedGroup||'')));if(alias){log(`✓ Objetivo completo (checkpoint): ${target.category} | ${alias} | ${requestedGroup||'-'}`);return}const {competition,group}=await openTarget(target,requestedGroup);showProgress('progress-competition',competition);const groupKey=key(target.category,competition,group);if(groups.has(groupKey))return;log(`INICIANDO ${target.category} | ${competition} | ${group||'-'}`);let lastDay=0,ended=false;for(let day=1;day<=60;day++){guard();const result=await processMatchday(target.category,competition,group,day);if(result==='END'){ended=true;log(`✓ Fin de jornadas detectado en ${lastDay}`);break}if(result!==true)throw new Error(`No se pudo terminar jornada ${day}; checkpoint conservado`);lastDay=day}if(!ended)throw new Error('Límite de seguridad de 60 jornadas sin detectar final');groups.add(groupKey);await saveCheckpoint();log(`✓ OBJETIVO COMPLETADO: ${competition}`)}
 async function startScraping(){status('Conectando Android…');const manager=AdbDaemonWebUsbDeviceManager.BROWSER;if(!manager)throw new Error('WebUSB no disponible');const devices=await manager.getDevices();const backend=devices.length===1?devices[0]:await manager.requestDevice();if(!backend){status('Cancelado');return}const connection=await backend.connect();adb=new Adb(await AdbDaemonTransport.authenticate({serial:backend.serial,connection,credentialStore:credentials}));const model=await shell('getprop ro.product.model'),android=await shell('getprop ro.build.version.release');$('device').textContent=`Dispositivo: ${model} · Android ${android}`;log(`Conexión ADB: ${model} · Android ${android}`);initCheckpoint(resumeOnUsbReconnect&&confirmedCheckpoint?confirmedCheckpoint:args.checkpoint);log(args.write_enabled?'Persistencia Supabase activada (servidor Streamlit)':'ATENCIÓN: escritura desactivada; solo vista previa');await shell(`monkey -p ${PACKAGE} -c android.intent.category.LAUNCHER 1`);await sleep(800);for(const target of TARGETS){for(const group of target.groups){guard();status(`${target.category} → ${target.aliases[0]}${group?' / '+group:''}`);await processTarget(target,group)}}status('Actualización finalizada');log(`FIN: ${progress.players} jugadores · ${progress.teams} equipos · ${progress.matches} partidos nuevos en esta sesión`)}
 // Streamlit v1 component protocol. Cada escritura espera confirmación del servidor antes de avanzar.
 window.addEventListener('message',event=>{if(event.source!==window.parent)return;const msg=event.data;if(msg?.type!=='streamlit:render')return;args=msg.args||{};const ack=args.ack;if(pendingAck&&ack?.session===clientSession&&ack?.id===pendingAck.id){const pending=pendingAck;pendingAck=null;clearTimeout(pending.timer);if(ack.ok)pending.resolve();else pending.reject(new Error(ack.error||'Error al guardar en Supabase'));setTimeout(()=>{void flushDiagnostics()},0)}});
@@ -315,7 +317,7 @@ async function executeScraper(automatic=false){
   usbDisconnected=false;
   progress={players:0,teams:0,matches:0};
   draw();
-  if(!automatic)$('log').textContent='';
+  if(!automatic&&!resumeOnUsbReconnect)$('log').textContent='';
   else log('✓ Conexión recuperada. Continuando…');
   try{
     await startScraping();
@@ -323,10 +325,10 @@ async function executeScraper(automatic=false){
   }catch(err){
     const message=String(err?.message||err);
     if(cancelled||message==='STOP_REQUESTED'){
-      resumeOnUsbReconnect=false;
-      status('Detenido');
-      $('log').textContent='⏹ Actualización detenida. Consola limpia.\n';
-    }else if(usbDisconnected||message==='USB_DISCONNECTED'||/ADB_TIMEOUT|socket|USB|ADB desconectado|interfaz android/i.test(message)){
+      resumeOnUsbReconnect=true;
+      status('Pausado por el usuario');
+      log('⏸ Actualización pausada. Se conserva el último checkpoint confirmado.');
+    }else if(usbDisconnected||message==='USB_DISCONNECTED'){
       resumeOnUsbReconnect=true;
       status('Móvil desconectado · pausado');
       $('device').textContent='Conecta el móvil por USB y abre la app RFAF para continuar.';
@@ -351,7 +353,7 @@ async function executeScraper(automatic=false){
 }
 let usbReconnectPending=false;
 async function scheduleReconnect(){
-  if(reconnectAttempting||!resumeOnUsbReconnect||cancelled)return;
+  if(reconnectAttempting||!resumeOnUsbReconnect||cancelled||pausedByUser)return;
   if(running){usbReconnectPending=true;return;}
   reconnectAttempting=true;
   try{
@@ -372,7 +374,7 @@ async function scheduleReconnect(){
   }finally{reconnectAttempting=false;}
 }
 navigator.usb?.addEventListener('connect',()=>{
-  if(resumeOnUsbReconnect&&!cancelled){
+  if(resumeOnUsbReconnect&&!cancelled&&!pausedByUser){
     void diagnostic('usb_reconnect','USB detectado de nuevo');
     scheduleReconnect();
   }
@@ -382,12 +384,14 @@ if(!window.isSecureContext||!navigator.usb||!AdbDaemonWebUsbDeviceManager.BROWSE
 }else btn.addEventListener('click',()=>{
   if(running){
     cancelled=true;
-    resumeOnUsbReconnect=false;
-    status('Deteniendo…');
+    pausedByUser=true;
+    resumeOnUsbReconnect=true;
+    status('Pausando…');
     interruptCommand('STOP_REQUESTED');
     return;
   }
-  resumeOnUsbReconnect=false;
+  pausedByUser=false;
+  // Si estaba pausado, se conserva el checkpoint confirmado para continuar.
   executeScraper(false);
 });
 

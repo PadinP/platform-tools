@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import math
 import hmac
-import re
-import logging
 from pathlib import Path
 
 import streamlit as st
@@ -121,39 +119,6 @@ def _save_checkpoint(api, data):
 
 
 
-def _safe_http_error(exc):
-    """Devuelve el estado HTTP y los campos no secretos del error PostgREST.
-
-    No imprime URL, cabeceras, tokens ni volcados de la petición.
-    """
-    response = getattr(exc, "response", None)
-    if response is None:
-        return f"{type(exc).__name__}: no se obtuvo respuesta HTTP (revisa conexión y servidor)"
-    status = getattr(response, "status_code", None)
-    desc = {400: "Petición inválida / columna o política incompatible",
-            401: "Clave o autenticación incorrecta",
-            403: "Permisos insuficientes / políticas RLS",
-            404: "Ruta o tabla no encontrada",
-            409: "Conflicto de restricción o registro",
-            500: "Error interno de Supabase"}.get(status, "Error HTTP")
-    safe = []
-    try:
-        payload = response.json()
-        if isinstance(payload, dict):
-            for field in ("code", "message", "hint", "details"):
-                value = payload.get(field)
-                if isinstance(value, (str, int, float)) and value:
-                    safe.append(f"{field}: {value}")
-    except (ValueError, TypeError, AttributeError):
-        pass
-    detail = " | ".join(safe)[:800]
-    # Defense in depth: redact keys, URLs and bearer tokens from server messages.
-    detail = re.sub(r"(?i)\b(?:sb_secret_|sb_publishable_|sk-[a-z0-9_-]+)[a-z0-9_-]*", "[credencial omitida]", detail)
-    detail = re.sub(r"(?i)bearer\s+\S+", "Bearer [credencial omitida]", detail)
-    detail = re.sub(r"https?://\S+", "[URL omitida]", detail)
-    return f"HTTP {status} — {desc}" + (f" | {detail}" if detail else "")
-
-
 ALLOWED_EVENTS = {"usb_disconnect", "usb_reconnect", "recovery_error", "scraper_error", "write_error", "complete"}
 
 def _write_diagnostic(api, payload, session):
@@ -175,115 +140,40 @@ def _write_diagnostic(api, payload, session):
     })
 
 
-def _friendly_incident(row):
-    """Traduce eventos técnicos sin perder el detalle original."""
-    code = row.get("evento", "")
-    titles = {
-        "usb_disconnect": ("Móvil desconectado", "warning", "Conecta el móvil por USB y abre la app RFAF."),
-        "usb_reconnect": ("Conexión recuperada", "success", "El móvil volvió a conectarse."),
-        "recovery_error": ("No se pudo reanudar", "error", "Abre la app RFAF e intenta reanudar la actualización."),
-        "scraper_error": ("Error durante la actualización", "error", "Revisa los detalles técnicos de esta incidencia."),
-        "write_error": ("Error al guardar los jugadores", "error", "Revisa la conexión con Supabase."),
-        "complete": ("Actualización finalizada", "success", "El proceso informó que terminó."),
-    }
-    if row.get("sesion") == "admin-test":
-        return "Prueba de diagnóstico", "success", "El diagnóstico pudo escribir en Supabase."
-    return titles.get(code, ("Evento de diagnóstico", "info", "Consulta los detalles técnicos."))
-
-
-def _group_incidents(rows):
-    """Agrupa avisos USB duplicados de la misma sesión en <=15 s."""
-    from datetime import datetime
-    ordered = sorted(rows, key=lambda r: r.get("creado_en") or "")
-    grouped = []
-    for row in ordered:
-        current = dict(row)
-        try:
-            current["_dt"] = datetime.fromisoformat(str(row.get("creado_en", "")).replace("Z", "+00:00"))
-        except ValueError:
-            current["_dt"] = None
-        if (grouped and current.get("evento") == "usb_disconnect" and
-            grouped[-1].get("evento") == "usb_disconnect" and
-            grouped[-1].get("sesion") == current.get("sesion") and
-            current["_dt"] is not None and grouped[-1]["_dt"] is not None and
-            0 <= (current["_dt"] - grouped[-1]["_dt"]).total_seconds() <= 15):
-            grouped[-1]["_duplicates"] += 1
-            grouped[-1]["_dt"] = current["_dt"]
-            grouped[-1]["creado_en"] = current.get("creado_en")
-            grouped[-1]["detalle"] = current.get("detalle")
-        else:
-            current["_duplicates"] = 1
-            grouped.append(current)
-    return list(reversed(grouped))
-
-
-def _incident_history(api):
-    """Consulta el historial al abrirse el panel y en los reruns de su fragmento."""
-    try:
-        rows = api("GET", "/rest/v1/logs_scraper", params={
-            "select": "creado_en,nivel,evento,detalle,sesion",
-            "order": "creado_en.desc", "limit": "200",
-        }).json()
-        if not isinstance(rows, list):
-            raise ValueError("Supabase no devolvió una lista de incidencias")
-    except Exception as exc:
-        st.warning("No se pudo consultar el diagnóstico: " + _safe_http_error(exc))
-        return
-
-    incidents = [r for r in _group_incidents(rows) if r.get("sesion") != "admin-test"]
-    errors = sum(r.get("nivel") == "ERROR" for r in incidents)
-    disconnects = sum(r.get("evento") == "usb_disconnect" for r in incidents)
-    recovered = sum(r.get("evento") == "usb_reconnect" for r in incidents)
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Errores", errors)
-    c2.metric("Desconexiones", disconnects)
-    c3.metric("Reconexiones", recovered)
-    st.caption("Últimos 200 eventos consultados; los avisos USB repetidos se agrupan.")
-    if not incidents:
-        st.info("Todavía no hay incidencias registradas.")
-        return
-    st.markdown("**Últimas incidencias**")
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-    for idx, incident in enumerate(incidents[:20]):
-        name, kind, explanation = _friendly_incident(incident)
-        try:
-            dt = datetime.fromisoformat(str(incident.get("creado_en", "")).replace("Z", "+00:00"))
-            stamp = dt.astimezone(ZoneInfo("Europe/Madrid")).strftime("%d/%m/%Y %H:%M:%S")
-        except (ValueError, KeyError, OverflowError):
-            stamp = str(incident.get("creado_en", ""))
-        symbol = {"warning": "⚠️", "error": "🔴", "success": "✅"}.get(kind, "ℹ️")
-        with st.container(border=True):
-            st.markdown(f"**{symbol} {name}** · {stamp}")
-            st.write(explanation)
-            with st.expander("Ver detalles técnicos", expanded=False):
-                st.code("\n".join([
-                    f"Fecha: {stamp}",
-                    f"Evento: {incident.get('evento', '')}",
-                    f"Nivel: {incident.get('nivel', '')}",
-                    f"Detalle: {incident.get('detalle', '')}",
-                    f"Sesión: {incident.get('sesion', '')}",
-                ]), language="text")
-                if incident.get("_duplicates", 1) > 1:
-                    st.caption(f"{incident['_duplicates']} avisos agrupados en esta incidencia")
-
-
 def _admin_panel(api):
     password = str(st.secrets.get("RFAF_ADMIN_PASSWORD", ""))
     with st.expander("Administración · Diagnóstico técnico", expanded=False):
         if not password:
-            st.info("Para consultar el diagnóstico, configura RFAF_ADMIN_PASSWORD en Streamlit Secrets. Esto no afecta a la actualización.")
+            st.info("Para consultar los registros, configura RFAF_ADMIN_PASSWORD en Streamlit Secrets. No afecta a la actualización de jugadores.")
             return
         if not st.session_state.get("rfaf_admin_ok", False):
             submitted = st.text_input("Contraseña de administrador", type="password", key="rfaf_admin_input")
-            if st.button("Entrar al diagnóstico", key="rfaf_admin_access"):
+            if st.button("Ver diagnósticos", key="rfaf_admin_access"):
                 if hmac.compare_digest(submitted, password):
                     st.session_state.rfaf_admin_ok = True
                     st.rerun(scope="fragment")
                 else:
                     st.error("Acceso denegado")
             return
-        _incident_history(api)
+        if st.button("Actualizar diagnóstico", key="rfaf_refresh_errors"):
+            pass
+        if st.button("Probar registro de diagnóstico", key="rfaf_test_log"):
+            try:
+                _write_diagnostic(api, {"code":"complete", "details":"Prueba de diagnóstico realizada desde el administrador"}, "admin-test")
+                st.success("Prueba guardada en Supabase. Pulsa Actualizar diagnóstico para verla.")
+            except Exception as exc:
+                st.error(f"No se pudo guardar el evento de prueba: {type(exc).__name__}. Revisa los permisos y la tabla logs_scraper.")
+        try:
+            rows = api("GET", "/rest/v1/logs_scraper", params={
+                "select": "creado_en,nivel,evento,detalle,sesion", "order": "creado_en.desc", "limit": "150"
+            }).json()
+            import pandas as pd
+            st.dataframe(pd.DataFrame(rows), height=260, hide_index=True, width="stretch")
+            if rows:
+                st.download_button("Descargar diagnósticos JSON", data=__import__("json").dumps(rows, ensure_ascii=False, indent=2),
+                    file_name="rfaf_diagnosticos.json", mime="application/json", key="rfaf_logs_export")
+        except Exception as exc:
+            st.warning(f"No se pudo consultar logs_scraper ({type(exc).__name__}). Comprueba la tabla y los permisos de Supabase.")
         if st.button("Cerrar sesión de administrador", key="rfaf_admin_logout"):
             st.session_state.rfaf_admin_ok = False
             st.rerun(scope="fragment")
@@ -346,8 +236,8 @@ def render_webadb(api):
     except Exception as exc:
         # No exponer información secreta; identificar el error por su tipo.
         import logging
-        logging.getLogger("rfaf.diagnostico").warning("Fallo en operación %s: %s", event_type, _safe_http_error(exc))
+        logging.getLogger("rfaf.diagnostico").warning("Error en operación %s: %s", event_type, type(exc).__name__)
         # Do not persist raw server exceptions that might contain request metadata.
         st.session_state.rfaf_webadb_ack = {"session": session, "id": event_id, "ok": False,
-                                          "error": "Error de escritura/diagnóstico: " + _safe_http_error(exc)}
+                                          "error": "Error de escritura/diagnóstico: " + type(exc).__name__}
     st.rerun(scope="fragment")
