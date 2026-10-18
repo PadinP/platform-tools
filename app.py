@@ -783,6 +783,7 @@ def panel_alineaciones_vivo():
   """
   zona_filtros = st.container()
   zona_campo = st.container()
+  st.session_state["rfaf_lineup_context"] = None
   try:
     df_original = leer_jugadores_tabla_viva().copy()
   except Exception:
@@ -1014,84 +1015,29 @@ def panel_alineaciones_vivo():
 
 
 
-  # ============================================================
-  # SIDEBAR - ALINEACIÓN
-  # ============================================================
-
-  st.header("Alineación")
-
-  formacion = st.selectbox("Formación", list(FORMACIONES.keys()))
-
-  lista_jugadores = (
-      plantilla["Jugador"].dropna().astype(str).drop_duplicates().tolist()
-  )
-
+  # La barra lateral se renderiza en su PROPIO fragmento: no se escribe desde
+  # un fragmento principal hacia st.sidebar (StreamlitInvalidLayoutContextError).
+  jugadores_plantilla = plantilla["Jugador"].dropna().astype(str).drop_duplicates().tolist()
+  st.session_state["rfaf_lineup_context"] = {
+      "temporada": temporada, "liga": liga, "grupo": grupo,
+      "equipo": equipo, "jugadores": jugadores_plantilla,
+  }
+  formacion = st.session_state.get("rfaf_formacion", "4-3-3")
+  if formacion not in FORMACIONES:
+    formacion = "4-3-3"
   puestos = FORMACIONES[formacion]
-
   claves_puestos = {}
-
-  for puesto, x, y in puestos:
-    clave = (
+  for puesto, _, _ in puestos:
+    claves_puestos[puesto] = (
         f"alineacion_{temporada}_{liga}_"
         f"{grupo if grupo is not None else 'SIN_GRUPO'}_{equipo}_{formacion}_{puesto}"
     )
-    claves_puestos[puesto] = clave
-
-
-  ya_usados = set()
-
-  for puesto, _, _ in puestos:
-    clave = claves_puestos[puesto]
-    valor = st.session_state.get(clave, SIN_SELECCION)
-
-    if valor != SIN_SELECCION and valor in ya_usados:
-      st.session_state[clave] = SIN_SELECCION
-    elif valor != SIN_SELECCION:
-      ya_usados.add(valor)
-
-
-  if st.button("🗑️ Limpiar alineación", width="stretch"):
-    for puesto, _, _ in puestos:
-      clave = claves_puestos[puesto]
-      st.session_state[clave] = SIN_SELECCION
-    st.rerun(scope="fragment")
-
-
-  seleccionados = {}
-
-  for puesto, x, y in puestos:
-    clave = claves_puestos[puesto]
-    actual = st.session_state.get(clave, SIN_SELECCION)
-
-    usados_en_otros = set()
-    for otro_puesto, _, _ in puestos:
-      if otro_puesto == puesto:
-        continue
-      otra_clave = claves_puestos[otro_puesto]
-      otro_jugador = st.session_state.get(otra_clave, SIN_SELECCION)
-      if otro_jugador != SIN_SELECCION:
-        usados_en_otros.add(otro_jugador)
-
-    opciones = [SIN_SELECCION]
-    for jugador in lista_jugadores:
-      if jugador not in usados_en_otros or jugador == actual:
-        opciones.append(jugador)
-
-    if actual not in opciones:
-      actual = SIN_SELECCION
-      st.session_state[clave] = SIN_SELECCION
-
-    indice = opciones.index(actual)
-
-    jugador = st.selectbox(puesto, opciones, index=indice, key=clave)
-
-    if jugador != SIN_SELECCION:
-      seleccionados[puesto] = jugador
-
-
-  st.caption(f"{len(seleccionados)}/11 jugadores seleccionados")
-
-
+  seleccionados = {
+      puesto: nombre
+      for puesto, _, _ in puestos
+      for nombre in [st.session_state.get(claves_puestos[puesto], SIN_SELECCION)]
+      if nombre != SIN_SELECCION and nombre in jugadores_plantilla
+  }
 
   with zona_campo.container():
     # ============================================================
@@ -1261,7 +1207,42 @@ def panel_alineaciones_vivo():
 
     # ============================================================
 
-# El fragmento y sus contenedores viven en la zona principal de Streamlit.
-# No insertar contenidos externos desde un fragmento de la barra lateral:
-# produce StreamlitInvalidLayoutContextError y oculta el campo.
+@st.fragment(run_every="5s")
+def panel_lateral_alineacion():
+  """Selectores vivos en la barra lateral, sin escribir fuera del fragmento."""
+  contexto = st.session_state.get("rfaf_lineup_context")
+  st.header("Alineación")
+  formacion = st.selectbox("Formación", list(FORMACIONES), key="rfaf_formacion")
+  if not contexto:
+    st.caption("Los jugadores aparecerán al guardarse en Supabase.")
+    return
+  temporada, liga, grupo, equipo = (contexto[k] for k in
+      ("temporada", "liga", "grupo", "equipo"))
+  jugadores = contexto["jugadores"]
+  puestos = FORMACIONES[formacion]
+  claves = {
+      puesto: (f"alineacion_{temporada}_{liga}_"
+               f"{grupo if grupo is not None else 'SIN_GRUPO'}_{equipo}_{formacion}_{puesto}")
+      for puesto, _, _ in puestos
+  }
+  if st.button("🗑️ Limpiar alineación", width="stretch", key="rfaf_limpiar_lineup"):
+    for clave in claves.values():
+      st.session_state[clave] = SIN_SELECCION
+    st.rerun(scope="fragment")
+  usados = set()
+  for puesto, _, _ in puestos:
+    clave = claves[puesto]
+    actual = st.session_state.get(clave, SIN_SELECCION)
+    # Opciones de otros puestos se excluyen; las elecciones anteriores persisten.
+    opciones = [SIN_SELECCION] + [j for j in jugadores if j not in usados or j == actual]
+    if actual not in opciones:
+      st.session_state[clave] = SIN_SELECCION
+    elegido = st.selectbox(puesto, opciones, key=clave)
+    if elegido != SIN_SELECCION:
+      usados.add(elegido)
+  st.caption(f"{len(usados)}/11 jugadores seleccionados")
+
+# Ambos fragmentos se dibujan únicamente en su propio contexto válido.
 panel_alineaciones_vivo()
+with st.sidebar:
+  panel_lateral_alineacion()
