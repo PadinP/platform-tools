@@ -28,6 +28,7 @@ let adb=null, running=false, cancelled=false, args={}, seq=0, pendingAck=null;
 let usbDisconnected=false, activeCommandCancel=null, inFlightShell=null;
 let resumeOnUsbReconnect=false, reconnectAttempting=false, confirmedCheckpoint=null, pausedByUser=false;
 let usbReconnectPending=false, disconnectTimer=null, activeUsbIdentity=null, runGeneration=0, currentRunAutomatic=false;
+let lastRunStoppedByUser=false, lastRecoveryFailureAt=0;
 const clientSession=crypto.randomUUID();
 let checkpoint={jugadores:[],equipos:[],partidos:[],grupos:[],anonymous_rows:{}};
 let players=new Set(),teams=new Set(),matches=new Set(),groups=new Set(),anonymous={};
@@ -349,7 +350,29 @@ const numerics=new Set(['año_nacimiento','convocados','titular','suplente','jug
 function buildRow(category,competition,group,team,season,result,name,year){const d=result.data;const row={Temporada:season,Categoria_origen:category,Competicion_origen:competition,Grupo_origen:group||'',Equipo_origen:team,Jugador:name,Año_nacimiento:d.Ano||year,Club_en_temporada:d.Club||'',Estado:d.Estado||'',Convocados:d.Convocados,Titular:d.Titular,Suplente:d.Suplente,Jugados:d.Jugados,Total_Goles:d['Total Goles'],Media_Goles:d['Media Goles'],Amarillas:d.Amarillas,Rojas:d.Rojas,Doble_Amarilla:d['Doble Amarilla'],Competiciones_temporada:result.comps};const out={};for(const [original,sql] of Object.entries(FIELDS)){const val=row[original];if(numerics.has(sql))out[sql]=val==null||val===''?null:Number(String(val).replace(',','.'));else if(sql==='media_goles')out[sql]=val==null||val===''?null:Number(String(val).replace(',','.'));else out[sql]=val==null?'':String(val)}return out}
 async function processPlayer(category,competition,group,team,roster,root,anonkey){root=await waitPlayer(root);if(!root){log('Ficha jugador no cargó');return false}const seasons={};seasons['26-27']=await seasonData(root);for(const s of ['25-26','24-25']){const historical=await selectSeason(s);if(historical)seasons[s]=await seasonData(historical);else seasons[s]=null}const name=resolvedName(roster,seasons);if(!name){log('Jugador sin nombre en 26-27/25-26/24-25; pendiente, no se marca completo');return false}const year=SEASONS.map(s=>seasons[s]?.data?.Ano).find(Boolean)||'',pk=key(category,competition,group,team,name);if(anonkey){anonymous[anonkey]=name;await saveCheckpoint()}if(players.has(pk))return true;let rows=0;for(const s of SEASONS){const result=seasons[s];if(!result)continue;result.data.Jugador=name;const row=buildRow(category,competition,group,team,s,result,name,year);await saveRow(row);rows++}if(!rows)return false;players.add(pk);await saveCheckpoint();progress.players++;log(`✓ JUGADOR: ${name} (${rows} temporadas)`);return true}
 async function processTarget(target,requestedGroup){const alias=target.aliases.find(a=>groups.has(key(target.category,a,requestedGroup||'')));if(alias){log(`✓ Objetivo completo (checkpoint): ${target.category} | ${alias} | ${requestedGroup||'-'}`);return}const {competition,group}=await openTarget(target,requestedGroup);showProgress('progress-competition',competition);const groupKey=key(target.category,competition,group);if(groups.has(groupKey))return;log(`INICIANDO ${target.category} | ${competition} | ${group||'-'}`);let lastDay=0,ended=false;for(let day=1;day<=60;day++){guard();const result=await processMatchday(target.category,competition,group,day);if(result==='END'){ended=true;log(`✓ Fin de jornadas detectado en ${lastDay}`);break}if(result!==true)throw new Error(`No se pudo terminar jornada ${day}; checkpoint conservado`);lastDay=day}if(!ended)throw new Error('Límite de seguridad de 60 jornadas sin detectar final');groups.add(groupKey);await saveCheckpoint();log(`✓ OBJETIVO COMPLETADO: ${competition}`)}
-async function startScraping(){status('Conectando Android…');const manager=AdbDaemonWebUsbDeviceManager.BROWSER;if(!manager)throw new Error('WebUSB no disponible');const devices=await manager.getDevices();const backend=devices.length===1?devices[0]:await manager.requestDevice();if(!backend){status('Cancelado');return}const connection=await backend.connect();const connectedDevices=await navigator.usb.getDevices();activeUsbIdentity=connectedDevices.length===1?{vendorId:connectedDevices[0].vendorId,productId:connectedDevices[0].productId,serialNumber:connectedDevices[0].serialNumber}:null;adb=new Adb(await AdbDaemonTransport.authenticate({serial:backend.serial,connection,credentialStore:credentials}));const model=await shell('getprop ro.product.model'),android=await shell('getprop ro.build.version.release');if(currentRunAutomatic)log('✓ Conexión recuperada. Continuando…');$('device').textContent=`Dispositivo: ${model} · Android ${android}`;log(`Conexión ADB: ${model} · Android ${android}`);initCheckpoint(resumeOnUsbReconnect&&confirmedCheckpoint?confirmedCheckpoint:args.checkpoint);log(args.write_enabled?'Persistencia Supabase activada (servidor Streamlit)':'ATENCIÓN: escritura desactivada; solo vista previa');await shell(`monkey -p ${PACKAGE} -c android.intent.category.LAUNCHER 1`);await sleep(800);for(const target of TARGETS){for(const group of target.groups){guard();status(`${target.category} → ${target.aliases[0]}${group?' / '+group:''}`);await processTarget(target,group)}}status('Actualización finalizada');log(`FIN: ${progress.players} jugadores · ${progress.teams} equipos · ${progress.matches} partidos nuevos en esta sesión`)}
+async function startScraping(){
+  // Una pausa manual NO debe cerrar WebUSB: conservar la sesión autenticada evita
+  // iniciar dos lectores del mismo endpoint al reanudar.
+  const reusedAdb=Boolean(adb);
+  status(reusedAdb?'Reanudando sesión ADB…':'Conectando Android…');
+  if(!reusedAdb){
+    // Si una transferencia anterior nunca terminó, no abrir otra sesión encima.
+    if(inFlightShell){
+      await Promise.race([inFlightShell.catch(()=>{}),sleep(3500)]);
+      if(inFlightShell)throw new Error('ADB_BUSY: existe una transferencia USB anterior aún activa. Desconecta y vuelve a conectar el móvil antes de reintentar.');
+    }
+    const manager=AdbDaemonWebUsbDeviceManager.BROWSER;
+    if(!manager)throw new Error('WebUSB no disponible');
+    const devices=await manager.getDevices();
+    const backend=devices.length===1?devices[0]:await manager.requestDevice();
+    if(!backend){status('Cancelado');return}
+    const connection=await backend.connect();
+    const connectedDevices=await navigator.usb.getDevices();
+    activeUsbIdentity=connectedDevices.length===1?{vendorId:connectedDevices[0].vendorId,productId:connectedDevices[0].productId,serialNumber:connectedDevices[0].serialNumber}:null;
+    adb=new Adb(await AdbDaemonTransport.authenticate({serial:backend.serial,connection,credentialStore:credentials}));
+  }
+  // Probar la sesión antes de iniciar navegación y clasificar errores WebUSB reales.
+const model=await shell('getprop ro.product.model'),android=await shell('getprop ro.build.version.release');if(currentRunAutomatic)log('✓ Conexión recuperada. Continuando…');$('device').textContent=`Dispositivo: ${model} · Android ${android}`;log(`Conexión ADB: ${model} · Android ${android}`);initCheckpoint(resumeOnUsbReconnect&&confirmedCheckpoint?confirmedCheckpoint:args.checkpoint);log(args.write_enabled?'Persistencia Supabase activada (servidor Streamlit)':'ATENCIÓN: escritura desactivada; solo vista previa');await shell(`monkey -p ${PACKAGE} -c android.intent.category.LAUNCHER 1`);await sleep(800);for(const target of TARGETS){for(const group of target.groups){guard();status(`${target.category} → ${target.aliases[0]}${group?' / '+group:''}`);await processTarget(target,group)}}status('Actualización finalizada');log(`FIN: ${progress.players} jugadores · ${progress.teams} equipos · ${progress.matches} partidos nuevos en esta sesión`)}
 // Streamlit v1 component protocol. Cada escritura espera confirmación del servidor antes de avanzar.
 window.addEventListener('message',event=>{if(event.source!==window.parent)return;const msg=event.data;if(msg?.type!=='streamlit:render')return;args=msg.args||{};const ack=args.ack;if(pendingAck&&ack?.session===clientSession&&ack?.id===pendingAck.id){const pending=pendingAck;pendingAck=null;clearTimeout(pending.timer);if(ack.ok)pending.resolve();else pending.reject(new Error(ack.error||'Error al guardar en Supabase'));setTimeout(()=>{void flushDiagnostics()},0)}});
 window.parent.postMessage({isStreamlitMessage:true,type:'streamlit:componentReady',apiVersion:1},'*');
@@ -371,6 +394,7 @@ resizeWebadbFrame();
 async function executeScraper(automatic=false){
   if(running || (automatic && pausedByUser))return;
   runGeneration++;cancelDisconnectCheck();
+  lastRunStoppedByUser=false;
   currentRunAutomatic=automatic;
   running=true;
   cancelled=false;
@@ -386,6 +410,7 @@ async function executeScraper(automatic=false){
   }catch(err){
     const message=String(err?.message||err);
     if(pausedByUser||cancelled||message==='STOP_REQUESTED'){
+      lastRunStoppedByUser=true;
       resumeOnUsbReconnect=true;
       status('Pausado por el usuario');
       log('⏸ Actualización pausada. Se conserva el último checkpoint confirmado.');
@@ -398,12 +423,16 @@ async function executeScraper(automatic=false){
     }else{
       resumeOnUsbReconnect=true;
       status('Error');
-      log('ERROR: No se pudo continuar. Consulta el diagnóstico del administrador.');
+      lastRecoveryFailureAt=Date.now();
+      log('ERROR: '+message.slice(0,190));
+      log('Consulta el diagnóstico del administrador.');
       await diagnostic('scraper_error',message.slice(0,400));
       log('Se conserva el último checkpoint confirmado.');
     }
   }finally{
-    await closeConnection();
+    // Sólo una pausa VOLUNTARIA y sin daños USB retiene el transporte autenticado.
+    // Tras error o desconexión se cierra, sin reutilizar sockets inválidos.
+    if(!(pausedByUser && !usbDisconnected && lastRunStoppedByUser))await closeConnection();
     running=false;
     draw();
     if(resumeOnUsbReconnect&&!cancelled&&!pausedByUser&&usbReconnectPending){
@@ -458,6 +487,10 @@ if(!window.isSecureContext||!navigator.usb||!AdbDaemonWebUsbDeviceManager.BROWSE
     resumeOnUsbReconnect=true;
     status('Pausando…');
     draw();
+    return;
+  }
+  if(lastRecoveryFailureAt && Date.now()-lastRecoveryFailureAt<5000){
+    log('Espera unos segundos antes de volver a intentar la conexión.');
     return;
   }
   pausedByUser=false;
