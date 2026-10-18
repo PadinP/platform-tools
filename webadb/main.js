@@ -27,6 +27,7 @@ const FIELDS={
 let adb=null, running=false, cancelled=false, args={}, seq=0, pendingAck=null;
 let usbDisconnected=false, activeCommandCancel=null;
 let resumeOnUsbReconnect=false, reconnectAttempting=false, confirmedCheckpoint=null, pausedByUser=false;
+let usbReconnectPending=false, disconnectTimer=null, activeUsbIdentity=null, runGeneration=0;
 const clientSession=crypto.randomUUID();
 let checkpoint={jugadores:[],equipos:[],partidos:[],grupos:[],anonymous_rows:{}};
 let players=new Set(),teams=new Set(),matches=new Set(),groups=new Set(),anonymous={};
@@ -152,15 +153,35 @@ async function closeConnection(){
   if(!old)return;
   try{await Promise.race([Promise.resolve().then(()=>old.close?.()),sleep(1500)]);}catch(_){}
 }
-navigator.usb?.addEventListener('disconnect',()=>{
-  if(!running)return;
-  usbDisconnected=true;
-  resumeOnUsbReconnect=true;
-  status('Móvil desconectado · pausado');
-  $('device').textContent='Conecta el móvil por USB y abre la app RFAF para continuar.';
-  log('⚠ Móvil desconectado. Conéctalo para continuar.');
-  void diagnostic('usb_disconnect','Conexión física USB interrumpida');
-  interruptCommand('USB_DISCONNECTED');
+// Sólo tratar una desconexión del teléfono que utiliza esta ejecución.
+// Algunos equipos emiten eventos USB transitorios al cambiar de interfaz.
+function sameActiveUsb(device){
+  if(!activeUsbIdentity || !device)return false;
+  if(device.vendorId!==activeUsbIdentity.vendorId || device.productId!==activeUsbIdentity.productId)return false;
+  return !activeUsbIdentity.serialNumber || !device.serialNumber || device.serialNumber===activeUsbIdentity.serialNumber;
+}
+function cancelDisconnectCheck(){if(disconnectTimer!==null){clearTimeout(disconnectTimer);disconnectTimer=null;}}
+navigator.usb?.addEventListener('disconnect',event=>{
+  if(!running || pausedByUser || cancelled || !sameActiveUsb(event.device))return;
+  cancelDisconnectCheck();
+  const generation=runGeneration;
+  disconnectTimer=setTimeout(async()=>{
+    disconnectTimer=null;
+    if(!running || pausedByUser || cancelled || generation!==runGeneration)return;
+    // Si el teléfono sigue presente, era un evento transitorio y el scraping sigue.
+    try{
+      const devices=await navigator.usb.getDevices();
+      if(devices.some(sameActiveUsb))return;
+    }catch(_){}
+    if(usbDisconnected)return;
+    usbDisconnected=true;
+    resumeOnUsbReconnect=true;
+    status('Móvil desconectado · pausado');
+    $('device').textContent='Conecta el móvil por USB y abre la app RFAF para continuar.';
+    log('⚠ Móvil desconectado. Actualización pausada.');
+    void diagnostic('usb_disconnect','USB desconectado durante la ejecución');
+    interruptCommand('USB_DISCONNECTED');
+  },1600);
 });
 async function tap(node,label='elemento'){const p=center(node);if(!p)throw new Error(`No puedo pulsar ${label}: sin límites`);await shell(`input tap ${p[0]} ${p[1]}`);await sleep(160)}
 async function back(){await shell('input keyevent 4');await sleep(180)}
@@ -310,7 +331,7 @@ const numerics=new Set(['año_nacimiento','convocados','titular','suplente','jug
 function buildRow(category,competition,group,team,season,result,name,year){const d=result.data;const row={Temporada:season,Categoria_origen:category,Competicion_origen:competition,Grupo_origen:group||'',Equipo_origen:team,Jugador:name,Año_nacimiento:d.Ano||year,Club_en_temporada:d.Club||'',Estado:d.Estado||'',Convocados:d.Convocados,Titular:d.Titular,Suplente:d.Suplente,Jugados:d.Jugados,Total_Goles:d['Total Goles'],Media_Goles:d['Media Goles'],Amarillas:d.Amarillas,Rojas:d.Rojas,Doble_Amarilla:d['Doble Amarilla'],Competiciones_temporada:result.comps};const out={};for(const [original,sql] of Object.entries(FIELDS)){const val=row[original];if(numerics.has(sql))out[sql]=val==null||val===''?null:Number(String(val).replace(',','.'));else if(sql==='media_goles')out[sql]=val==null||val===''?null:Number(String(val).replace(',','.'));else out[sql]=val==null?'':String(val)}return out}
 async function processPlayer(category,competition,group,team,roster,root,anonkey){root=await waitPlayer(root);if(!root){log('Ficha jugador no cargó');return false}const seasons={};seasons['26-27']=await seasonData(root);for(const s of ['25-26','24-25']){const historical=await selectSeason(s);if(historical)seasons[s]=await seasonData(historical);else seasons[s]=null}const name=resolvedName(roster,seasons);if(!name){log('Jugador sin nombre en 26-27/25-26/24-25; pendiente, no se marca completo');return false}const year=SEASONS.map(s=>seasons[s]?.data?.Ano).find(Boolean)||'',pk=key(category,competition,group,team,name);if(anonkey){anonymous[anonkey]=name;await saveCheckpoint()}if(players.has(pk))return true;let rows=0;for(const s of SEASONS){const result=seasons[s];if(!result)continue;result.data.Jugador=name;const row=buildRow(category,competition,group,team,s,result,name,year);await saveRow(row);rows++}if(!rows)return false;players.add(pk);await saveCheckpoint();progress.players++;log(`✓ JUGADOR: ${name} (${rows} temporadas)`);return true}
 async function processTarget(target,requestedGroup){const alias=target.aliases.find(a=>groups.has(key(target.category,a,requestedGroup||'')));if(alias){log(`✓ Objetivo completo (checkpoint): ${target.category} | ${alias} | ${requestedGroup||'-'}`);return}const {competition,group}=await openTarget(target,requestedGroup);showProgress('progress-competition',competition);const groupKey=key(target.category,competition,group);if(groups.has(groupKey))return;log(`INICIANDO ${target.category} | ${competition} | ${group||'-'}`);let lastDay=0,ended=false;for(let day=1;day<=60;day++){guard();const result=await processMatchday(target.category,competition,group,day);if(result==='END'){ended=true;log(`✓ Fin de jornadas detectado en ${lastDay}`);break}if(result!==true)throw new Error(`No se pudo terminar jornada ${day}; checkpoint conservado`);lastDay=day}if(!ended)throw new Error('Límite de seguridad de 60 jornadas sin detectar final');groups.add(groupKey);await saveCheckpoint();log(`✓ OBJETIVO COMPLETADO: ${competition}`)}
-async function startScraping(){status('Conectando Android…');const manager=AdbDaemonWebUsbDeviceManager.BROWSER;if(!manager)throw new Error('WebUSB no disponible');const devices=await manager.getDevices();const backend=devices.length===1?devices[0]:await manager.requestDevice();if(!backend){status('Cancelado');return}const connection=await backend.connect();adb=new Adb(await AdbDaemonTransport.authenticate({serial:backend.serial,connection,credentialStore:credentials}));const model=await shell('getprop ro.product.model'),android=await shell('getprop ro.build.version.release');$('device').textContent=`Dispositivo: ${model} · Android ${android}`;log(`Conexión ADB: ${model} · Android ${android}`);initCheckpoint(resumeOnUsbReconnect&&confirmedCheckpoint?confirmedCheckpoint:args.checkpoint);log(args.write_enabled?'Persistencia Supabase activada (servidor Streamlit)':'ATENCIÓN: escritura desactivada; solo vista previa');await shell(`monkey -p ${PACKAGE} -c android.intent.category.LAUNCHER 1`);await sleep(800);for(const target of TARGETS){for(const group of target.groups){guard();status(`${target.category} → ${target.aliases[0]}${group?' / '+group:''}`);await processTarget(target,group)}}status('Actualización finalizada');log(`FIN: ${progress.players} jugadores · ${progress.teams} equipos · ${progress.matches} partidos nuevos en esta sesión`)}
+async function startScraping(){status('Conectando Android…');const manager=AdbDaemonWebUsbDeviceManager.BROWSER;if(!manager)throw new Error('WebUSB no disponible');const devices=await manager.getDevices();const backend=devices.length===1?devices[0]:await manager.requestDevice();if(!backend){status('Cancelado');return}const connection=await backend.connect();const connectedDevices=await navigator.usb.getDevices();activeUsbIdentity=connectedDevices.length===1?{vendorId:connectedDevices[0].vendorId,productId:connectedDevices[0].productId,serialNumber:connectedDevices[0].serialNumber}:null;adb=new Adb(await AdbDaemonTransport.authenticate({serial:backend.serial,connection,credentialStore:credentials}));const model=await shell('getprop ro.product.model'),android=await shell('getprop ro.build.version.release');$('device').textContent=`Dispositivo: ${model} · Android ${android}`;log(`Conexión ADB: ${model} · Android ${android}`);initCheckpoint(resumeOnUsbReconnect&&confirmedCheckpoint?confirmedCheckpoint:args.checkpoint);log(args.write_enabled?'Persistencia Supabase activada (servidor Streamlit)':'ATENCIÓN: escritura desactivada; solo vista previa');await shell(`monkey -p ${PACKAGE} -c android.intent.category.LAUNCHER 1`);await sleep(800);for(const target of TARGETS){for(const group of target.groups){guard();status(`${target.category} → ${target.aliases[0]}${group?' / '+group:''}`);await processTarget(target,group)}}status('Actualización finalizada');log(`FIN: ${progress.players} jugadores · ${progress.teams} equipos · ${progress.matches} partidos nuevos en esta sesión`)}
 // Streamlit v1 component protocol. Cada escritura espera confirmación del servidor antes de avanzar.
 window.addEventListener('message',event=>{if(event.source!==window.parent)return;const msg=event.data;if(msg?.type!=='streamlit:render')return;args=msg.args||{};const ack=args.ack;if(pendingAck&&ack?.session===clientSession&&ack?.id===pendingAck.id){const pending=pendingAck;pendingAck=null;clearTimeout(pending.timer);if(ack.ok)pending.resolve();else pending.reject(new Error(ack.error||'Error al guardar en Supabase'));setTimeout(()=>{void flushDiagnostics()},0)}});
 window.parent.postMessage({isStreamlitMessage:true,type:'streamlit:componentReady',apiVersion:1},'*');
@@ -330,20 +351,22 @@ activityPanel?.addEventListener('toggle',()=>{
 if(typeof ResizeObserver!=='undefined')new ResizeObserver(resizeWebadbFrame).observe(document.querySelector('.card'));
 resizeWebadbFrame();
 async function executeScraper(automatic=false){
-  if(running)return;
+  if(running || (automatic && pausedByUser))return;
+  runGeneration++;cancelDisconnectCheck();
   running=true;
   cancelled=false;
   usbDisconnected=false;
   progress={players:0,teams:0,matches:0};
   draw();
   if(!automatic&&!resumeOnUsbReconnect)$('log').textContent='';
-  else log('✓ Conexión recuperada. Continuando…');
+  else if(automatic)log('✓ Conexión recuperada. Continuando…');
+  else log('▶ Reanudando desde el último checkpoint confirmado…');
   try{
     await startScraping();
     resumeOnUsbReconnect=false;
   }catch(err){
     const message=String(err?.message||err);
-    if(cancelled||message==='STOP_REQUESTED'){
+    if(pausedByUser||cancelled||message==='STOP_REQUESTED'){
       resumeOnUsbReconnect=true;
       status('Pausado por el usuario');
       log('⏸ Actualización pausada. Se conserva el último checkpoint confirmado.');
@@ -351,7 +374,7 @@ async function executeScraper(automatic=false){
       resumeOnUsbReconnect=true;
       status('Móvil desconectado · pausado');
       $('device').textContent='Conecta el móvil por USB y abre la app RFAF para continuar.';
-      log('⚠ Móvil desconectado. Actualización pausada.');
+      if(!technicalHistory.some(x=>x.endsWith('Móvil desconectado. Actualización pausada.')))log('⚠ Móvil desconectado. Actualización pausada.');
       await diagnostic('usb_disconnect',message.slice(0,180));
     }else{
       resumeOnUsbReconnect=false;
@@ -364,20 +387,19 @@ async function executeScraper(automatic=false){
     await closeConnection();
     running=false;
     draw();
-    if(resumeOnUsbReconnect&&!cancelled&&usbReconnectPending){
+    if(resumeOnUsbReconnect&&!cancelled&&!pausedByUser&&usbReconnectPending){
       usbReconnectPending=false;
       scheduleReconnect();
     }
   }
 }
-let usbReconnectPending=false;
 async function scheduleReconnect(){
   if(reconnectAttempting||!resumeOnUsbReconnect||cancelled||pausedByUser)return;
   if(running){usbReconnectPending=true;return;}
   reconnectAttempting=true;
   try{
     await sleep(1200);
-    if(!resumeOnUsbReconnect||running||cancelled)return;
+    if(!resumeOnUsbReconnect||running||cancelled||pausedByUser)return;
     const manager=AdbDaemonWebUsbDeviceManager.BROWSER;
     const devices=manager?await manager.getDevices():[];
     if(devices.length===1){
@@ -396,8 +418,9 @@ async function scheduleReconnect(){
     await diagnostic('recovery_error',String(err?.message||err).slice(0,350));
   }finally{reconnectAttempting=false;}
 }
-navigator.usb?.addEventListener('connect',()=>{
-  if(resumeOnUsbReconnect&&!cancelled&&!pausedByUser){
+navigator.usb?.addEventListener('connect',event=>{
+  cancelDisconnectCheck();
+  if(resumeOnUsbReconnect&&!cancelled&&!pausedByUser && (!activeUsbIdentity || sameActiveUsb(event.device))){
     void diagnostic('usb_reconnect','USB detectado de nuevo');
     scheduleReconnect();
   }
@@ -408,12 +431,17 @@ if(!window.isSecureContext||!navigator.usb||!AdbDaemonWebUsbDeviceManager.BROWSE
   if(running){
     cancelled=true;
     pausedByUser=true;
+    usbReconnectPending=false;
+    cancelDisconnectCheck();
     resumeOnUsbReconnect=true;
     status('Pausando…');
     interruptCommand('STOP_REQUESTED');
     return;
   }
   pausedByUser=false;
+  cancelled=false;
+  usbReconnectPending=false;
+  cancelDisconnectCheck();
   // Si estaba pausado, se conserva el checkpoint confirmado para continuar.
   executeScraper(false);
 });
